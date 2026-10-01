@@ -35,13 +35,13 @@ def delta_txt(cur, prev) -> str | None:
 
 
 def kpi(col, label: str, value: str, cur=None, prev=None, prev_week=None, help: str = "",
-        inverse: bool = False) -> None:
+        inverse: bool = False, cap: str = "전주 동요일 대비") -> None:
     """KPI 카드: 값 + 전일 대비(▲▼) + 전주 동요일 대비 캡션 + ⓘ 계산 근거 툴팁."""
     with col:
         st.metric(label, value, delta_txt(cur, prev), delta_color="inverse" if inverse else "normal",
                   help=help or None)
         wk = delta_txt(cur, prev_week)
-        st.caption(f"전주 동요일 대비 {wk}" if wk else "전주 동요일 대비 -")
+        st.caption(f"{cap} {wk}" if wk else f"{cap} -")
 
 
 def card(col, label: str, value: str, help: str = "", delta: str | None = None, inverse: bool = False):
