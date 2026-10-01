@@ -199,6 +199,22 @@ def type_cfg(cfg: dict, code: str) -> dict:
     return c
 
 
+def _set_range(rkey: str, s: str, e: str) -> None:
+    st.session_state[rkey] = (pd.Timestamp(s).date(), pd.Timestamp(e).date())
+
+
+def _quick_cb(key: str, optmap: dict) -> None:
+    sel = st.session_state.get(f"{key}_quick")
+    if sel in optmap:
+        _set_range(f"{key}_rng", *optmap[sel])
+    st.session_state[f"{key}_quick"] = "직접 입력"          # 다시 같은 항목을 고를 수 있게 되돌림
+
+
+def period_kind(s: str, e: str) -> str:
+    n = (pd.Timestamp(e) - pd.Timestamp(s)).days + 1
+    return "월간" if n >= 28 else "주간" if n == 7 else "일자" if n == 1 else "기간"
+
+
 def ad_filters(d: dict, cfg: dict, key: str, allow_sale_type: bool = True,
                force_retail: bool = False, default_stype: str = "로켓배송",
                fixed_stype: str | None = None) -> dict | None:
@@ -210,9 +226,21 @@ def ad_filters(d: dict, cfg: dict, key: str, allow_sale_type: bool = True,
         return None
     periods = ad[["period_start", "period_end"]].drop_duplicates().sort_values("period_start")
     lo, hi = periods["period_start"].min(), periods["period_end"].max()
-    c1, c2, c3 = st.columns([2, 2, 1.2])
-    rng = c1.date_input("기간 (시작일 ~ 종료일)", value=(pd.Timestamp(lo).date(), pd.Timestamp(hi).date()),
-                        min_value=pd.Timestamp(lo).date(), max_value=pd.Timestamp(hi).date(), key=f"{key}_rng",
+    lo_d, hi_d = pd.Timestamp(lo).date(), pd.Timestamp(hi).date()
+    allp = [(r.period_start, r.period_end) for r in periods.itertuples()]
+    rkey = f"{key}_rng"
+    cur = st.session_state.get(rkey)
+    if not (isinstance(cur, (tuple, list)) and 1 <= len(cur) <= 2 and all(lo_d <= x <= hi_d for x in cur)):
+        st.session_state[rkey] = (lo_d, hi_d)                   # 처음이거나 데이터 범위를 벗어났으면 전체 기간
+    quick = {"전체 기간": (lo, hi)}
+    for sp in allp:
+        if sp[0] != sp[1]:
+            quick[f"{period_label(*sp)} · {period_kind(*sp)}({(pd.Timestamp(sp[1]) - pd.Timestamp(sp[0])).days + 1}일)"] = sp
+    cq, c1, c2, c3 = st.columns([2.2, 2.2, 1.8, 1.2])
+    cq.selectbox("빠른 선택 (저장된 기간)", ["직접 입력"] + list(quick), key=f"{key}_quick",
+                 on_change=_quick_cb, args=(key, quick),
+                 help="업로드한 주간·월간 파일의 기간을 한 번에 선택합니다. 고르면 옆의 날짜가 자동으로 바뀝니다.")
+    rng = c1.date_input("기간 (시작일 ~ 종료일)", min_value=lo_d, max_value=hi_d, key=rkey,
                         help="일자 파일은 날짜별로 걸러지지만, 주간·월간 파일은 일자별로 나눌 수 없어 "
                              "선택한 기간 안에 파일 전체가 들어올 때만 포함됩니다.")
     s0, e0 = (rng[0], rng[-1]) if isinstance(rng, (tuple, list)) and len(rng) else (rng, rng)
@@ -231,14 +259,17 @@ def ad_filters(d: dict, cfg: dict, key: str, allow_sale_type: bool = True,
     window = c3.radio("전환 기준", [14, 1], index=0 if default_w == 14 else 1, horizontal=True,
                       format_func=lambda x: f"{x}일", key=f"{key}_w",
                       help="광고 클릭/노출 후 N일 이내 발생한 주문을 광고 성과로 인정")
-    allp = [(r.period_start, r.period_end) for r in periods.itertuples()]
     inside = [sp for sp in allp if sp[0] >= s_sel and sp[1] <= e_sel]
     partial = [sp for sp in allp if sp not in inside and sp[0] <= e_sel and sp[1] >= s_sel]
     kept, dropped = _drop_nested(inside)
     if partial:
         st.warning("선택 기간과 일부만 겹쳐 **제외된 파일**: " + ", ".join(period_label(*sp) for sp in partial)
-                   + " — 주간·월간 파일은 일자별로 나눌 수 없습니다. 이 파일을 보려면 기간을 파일 전체 기간으로 넓히세요. "
+                   + " — 주간·월간 파일은 일자별로 나눌 수 없습니다. 아래 버튼으로 파일 전체 기간을 바로 볼 수 있어요. "
                      "하루 단위로 보려면 일자별 광고 파일(시작일=종료일)을 올려야 합니다.")
+        bc = st.columns(min(len(partial), 4))
+        for i, sp in enumerate(partial[:4]):
+            bc[i].button(f"👉 {period_label(*sp)} {period_kind(*sp)} 전체 보기", key=f"{key}_pb{i}",
+                         on_click=_set_range, args=(rkey, sp[0], sp[1]))
     if dropped:
         st.caption("ℹ️ 더 큰 기간 파일에 포함되어 이중 집계를 막으려고 뺀 파일: "
                    + ", ".join(period_label(*sp) for sp in dropped))

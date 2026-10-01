@@ -6,18 +6,15 @@ from src import metrics as M
 from src import ui
 
 
-def render(code: str, label: str, icon: str) -> None:
-    cfg = ui.setup(f"{label} 광고 성과", icon)
-    cfg = ui.type_cfg(cfg, code)
-    d = ui.load_all(cfg)
+def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
     f = ui.ad_filters(d, cfg, f"adp_{code}", fixed_stype=label)
     if f is None:
-        st.stop()
+        return
     p = ui.apply_extra_filters(f["df"], f"adp_{code}", keyword=True)
     w = f["window"]
     if p.empty:
         st.info("선택한 조건에 해당하는 광고 데이터가 없습니다.")
-        st.stop()
+        return
 
     tot = M.ad_summary(p).iloc[0]
     st.caption(f"{ui.period_label(f['start'], f['end'])} · {f['stype']} · 전환 {w}일 기준. "
@@ -167,3 +164,95 @@ def render(code: str, label: str, icon: str) -> None:
                             line=dict(color="#4C78A8"), hovertemplate="%{x}<br>ROAS %{y:.0f}%<extra></extra>")
             fig.update_layout(yaxis=dict(title="광고비(₩)"), yaxis2=dict(title="ROAS(%)", overlaying="y", side="right", showgrid=False))
             ui.show(fig, 380)
+
+
+# ------------------------------------------------------------------ 기간별 비교
+def _period_compare(code: str, label: str, cfg: dict, d: dict) -> None:
+    """저장된 광고 데이터를 기간 단위(파일 / 주별 / 월별)로 나란히 비교한다. 상세 분석의 기간 선택과는 별개."""
+    ad = d["ad"]
+    sub = ad[ad["sale_type"] == code] if len(ad) else ad
+    if sub.empty:
+        st.info("저장된 광고 데이터가 없습니다.")
+        return
+    st.caption("저장된 광고 데이터를 기간별로 나란히 봅니다. 기간이 다르면 합계 대신 **일평균**으로 비교하세요.")
+    c1, c2 = st.columns([3, 1.2])
+    unit = c1.radio("묶는 방식", ["저장된 기간 파일 (주간·월간 등)", "일자 데이터를 주별로", "일자 데이터를 월별로"],
+                    horizontal=True, key=f"pc_{code}_u")
+    w = c2.radio("전환 기준", [14, 1], index=0 if int(cfg["attribution_days"]) == 14 else 1, horizontal=True,
+                 format_func=lambda x: f"{x}일", key=f"pc_{code}_w")
+    p = M.prep_ad(sub, w, d["map"], d["master"], cfg["default_breakeven_roas"], ui.supply_by_sku(d["daily"]),
+                  cfg.get("wing_target_roas"))
+    note: dict = {}
+    if unit.startswith("저장된"):
+        f = p[p["period_start"] != p["period_end"]]
+        if f.empty:
+            st.info("주간·월간 같은 기간 파일이 없습니다. '일자 데이터를 주별/월별로' 를 선택해 보세요.")
+            return
+        g = M.ad_summary(f, ["period_start", "period_end"]).sort_values("period_start")
+        g["일수"] = [(pd.Timestamp(e) - pd.Timestamp(s0)).days + 1 for s0, e in zip(g["period_start"], g["period_end"])]
+        g["기간"] = [f"{ui.period_label(s0, e)} ({ui.period_kind(s0, e)})" for s0, e in zip(g["period_start"], g["period_end"])]
+        spans = list(zip(g["period_start"], g["period_end"]))
+        g["비고"] = ["" if (a, b) not in ui._drop_nested(spans)[1] else
+                   "다른 기간에 포함됨 (합산 주의)" for a, b in spans]
+    else:
+        dd = p[p["period_start"] == p["period_end"]].copy()
+        if dd.empty:
+            st.info("일자 광고 파일(시작일=종료일)이 아직 없습니다. 매일 광고 파일을 올리면 주별·월별로 묶어서 볼 수 있어요.")
+            return
+        dt = pd.to_datetime(dd["period_start"])
+        if "주별" in unit:
+            mon = dt - pd.to_timedelta(dt.dt.weekday, unit="D")
+            dd["_grp"] = mon.dt.strftime("%Y-%m-%d")
+        else:
+            dd["_grp"] = dt.dt.strftime("%Y-%m")
+        g = M.ad_summary(dd, ["_grp"]).sort_values("_grp")
+        days = dd.groupby("_grp")["period_start"].nunique()
+        g["일수"] = g["_grp"].map(days).astype(int)
+        full = 7 if "주별" in unit else None
+        labs, notes = [], []
+        for grp, n in zip(g["_grp"], g["일수"]):
+            if "주별" in unit:
+                m0 = pd.Timestamp(grp)
+                labs.append(f"{m0:%m/%d}~{m0 + pd.Timedelta(days=6):%m/%d}")
+                notes.append("" if n >= 7 else f"일자 데이터 {n}/7일")
+            else:
+                labs.append(grp)
+                dim = pd.Period(grp).days_in_month
+                notes.append("" if n >= dim else f"일자 데이터 {n}/{dim}일")
+        g["기간"], g["비고"] = labs, notes
+    g["일평균 광고비"] = g["cost"] / g["일수"]
+    g["일평균 전환매출"] = g["rev"] / g["일수"]
+    g["기준"] = g["be_roas"]
+    g["판정"] = ["✅ 양호" if (c > 0 and r >= b) else ("-" if c <= 0 else "⚠️ 기준 미달") for c, r, b in zip(g["cost"], g["roas"], g["be_roas"])]
+    ref = ui.ref_label(label)
+    show = g[["기간", "일수", "cost", "일평균 광고비", "clicks", "orders", "rev", "일평균 전환매출", "cvr", "cpc", "roas", "기준", "판정", "비고"]]
+    st.dataframe(show.rename(columns={"cost": "광고비", "clicks": "클릭", "orders": "주문", "rev": "전환매출", "cvr": "CVR",
+                                      "cpc": "CPC", "roas": "ROAS", "기준": ref}),
+                 hide_index=True, width="stretch", column_config={
+                     "광고비": st.column_config.NumberColumn(format="₩%d"), "일평균 광고비": st.column_config.NumberColumn(format="₩%d"),
+                     "전환매출": st.column_config.NumberColumn(format="₩%d"), "일평균 전환매출": st.column_config.NumberColumn(format="₩%d"),
+                     "CPC": st.column_config.NumberColumn(format="₩%d"), "CVR": st.column_config.NumberColumn(format="percent"),
+                     "ROAS": st.column_config.NumberColumn(format="percent"), ref: st.column_config.NumberColumn(format="percent")})
+    fig = go.Figure()
+    fig.add_bar(x=g["기간"], y=g["일평균 광고비"], name="일평균 광고비", marker_color="#E45756",
+                hovertemplate="%{x}<br>일평균 광고비 ₩%{y:,.0f}<extra></extra>")
+    fig.add_bar(x=g["기간"], y=g["일평균 전환매출"], name="일평균 전환매출", marker_color="#4C78A8",
+                hovertemplate="%{x}<br>일평균 전환매출 ₩%{y:,.0f}<extra></extra>")
+    fig.add_scatter(x=g["기간"], y=g["roas"] * 100, name="ROAS(%)", yaxis="y2", mode="lines+markers",
+                    line=dict(color="#54A24B"), hovertemplate="%{x}<br>ROAS %{y:.0f}%<extra></extra>")
+    fig.update_layout(barmode="group", yaxis=dict(title="일평균(₩)"),
+                      yaxis2=dict(title="ROAS(%)", overlaying="y", side="right", showgrid=False))
+    ui.show(fig, 380)
+    st.caption("주간·월간 파일은 서로 겹칠 수 있으니(월간 안에 주간이 포함 등) 표의 합계를 더하지 마세요. "
+               "'일수'가 다른 기간끼리는 일평균으로 비교합니다. 기간 안에 일자 데이터가 일부만 있으면 비고에 표시됩니다.")
+
+
+def render(code: str, label: str, icon: str) -> None:
+    cfg = ui.setup(f"{label} 광고 성과", icon)
+    cfg = ui.type_cfg(cfg, code)
+    d = ui.load_all(cfg)
+    t_detail, t_period = st.tabs(["📊 상세 분석", "🗓️ 기간별 비교"])
+    with t_detail:
+        _detail(code, label, cfg, d)
+    with t_period:
+        _period_compare(code, label, cfg, d)
