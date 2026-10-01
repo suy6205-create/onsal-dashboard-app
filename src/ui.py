@@ -88,10 +88,25 @@ def _password_gate() -> None:
     st.stop()
 
 
+def _storage_badge() -> None:
+    """어떤 저장소를 쓰는지 사이드바에 표시. 온라인 서버가 임시 저장소를 쓰면 경고."""
+    try:
+        if db.is_remote():
+            st.sidebar.caption("💾 저장소: 온라인 DB (데이터 유지됨)")
+        elif str(db.ROOT).startswith("/mount"):
+            st.sidebar.error("⚠️ 온라인 DB에 연결되지 않았습니다. 지금 임시 저장소를 쓰는 중이라 업로드한 데이터가 "
+                             "서버 재시작 시 사라집니다. Streamlit 앱 설정 → Secrets 의 DATABASE_URL 을 확인하세요.")
+        else:
+            st.sidebar.caption("💾 저장소: 이 PC의 로컬 파일")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def setup(title: str, icon: str = "📊") -> dict:
     st.set_page_config(page_title=f"온살 · {title}", page_icon=icon, layout="wide")
     st.markdown(_CSS, unsafe_allow_html=True)
     _password_gate()
+    _storage_badge()
     db.init_db()
     cfg = config.load_settings()
     st.title(f"{icon} {title}")
