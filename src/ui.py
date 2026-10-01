@@ -64,28 +64,55 @@ div[data-testid="stMetricValue"] {font-size: 1.5rem;}
 """
 
 
-def _password_gate() -> None:
-    """APP_PASSWORD(환경변수 또는 Streamlit secrets)가 설정돼 있으면 비밀번호를 입력해야 화면이 열린다.
-    설정이 없으면(로컬 실행) 그냥 통과."""
-    import hmac
+def _admin_password() -> str:
+    """관리자 비밀번호: ADMIN_PASSWORD (없으면 APP_PASSWORD) — 환경변수 또는 Streamlit secrets. 없으면 빈 문자열."""
     import os
-    pw = os.environ.get("APP_PASSWORD", "")
-    if not pw:
-        try:
-            pw = str(st.secrets["APP_PASSWORD"])
-        except Exception:  # noqa: BLE001
-            pw = ""
-    if not pw or st.session_state.get("_authed"):
+    for key in ("ADMIN_PASSWORD", "APP_PASSWORD"):
+        pw = os.environ.get(key, "")
+        if not pw:
+            try:
+                pw = str(st.secrets[key])
+            except Exception:  # noqa: BLE001
+                pw = ""
+        if pw:
+            return pw
+    return ""
+
+
+def is_admin() -> bool:
+    """보기는 누구나, 업로드·설정·등록·수정은 관리자만. 비밀번호가 설정되지 않은 환경(로컬)은 항상 True."""
+    return (not _admin_password()) or bool(st.session_state.get("_admin"))
+
+
+def require_admin(what: str = "이 화면") -> None:
+    """관리자가 아니면 안내 후 페이지 실행을 멈춘다."""
+    if is_admin():
         return
-    st.title("🔒 온살 대시보드")
-    typed = st.text_input("비밀번호", type="password")
-    if typed:
-        if hmac.compare_digest(typed.encode(), pw.encode()):
-            st.session_state["_authed"] = True
-            st.rerun()
-        else:
-            st.error("비밀번호가 맞지 않습니다.")
+    st.warning(f"🔐 {what}은(는) 관리자만 사용할 수 있습니다. 왼쪽 메뉴 아래 **관리자 로그인**에 비밀번호를 입력하세요. "
+               "(다른 화면은 로그인 없이 볼 수 있습니다)")
     st.stop()
+
+
+def _admin_sidebar() -> None:
+    import hmac
+    pw = _admin_password()
+    if not pw:
+        return
+    with st.sidebar:
+        if st.session_state.get("_admin"):
+            st.caption("🔓 관리자 모드")
+            if st.button("관리자 로그아웃", key="_admin_logout"):
+                st.session_state["_admin"] = False
+                st.rerun()
+            return
+        with st.expander("🔐 관리자 로그인 (업로드·등록·설정)"):
+            typed = st.text_input("비밀번호", type="password", key="_admin_pw_input")
+            if typed:
+                if hmac.compare_digest(typed.encode(), pw.encode()):
+                    st.session_state["_admin"] = True
+                    st.rerun()
+                else:
+                    st.error("비밀번호가 맞지 않습니다.")
 
 
 def _storage_badge() -> None:
@@ -105,7 +132,7 @@ def _storage_badge() -> None:
 def setup(title: str, icon: str = "📊") -> dict:
     st.set_page_config(page_title=f"온살 · {title}", page_icon=icon, layout="wide")
     st.markdown(_CSS, unsafe_allow_html=True)
-    _password_gate()
+    _admin_sidebar()
     _storage_badge()
     db.init_db()
     cfg = config.load_settings()

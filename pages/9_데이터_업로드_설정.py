@@ -12,6 +12,7 @@ from src.export import to_excel_bytes
 from src import ui
 
 cfg = ui.setup("파일 업로드·설정", "📤")
+ui.require_admin("파일 업로드·설정 화면")
 t_up, t_hist, t_master, t_map, t_cfg, t_exp = st.tabs(
     ["파일 업로드", "업로드 이력 · 누락 캘린더", "상품 마스터", "광고 매핑표", "기준값", "내보내기"])
 

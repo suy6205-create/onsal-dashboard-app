@@ -15,52 +15,63 @@ names = dict(zip(master["SKU ID"], master["품목"]))
 sup = ui.supply_by_sku(daily)
 vat, fee_default = cfg["vat"], cfg["trial_fee_per_unit"] * cfg["vat"]
 
-st.subheader("체험단 등록")
+admin = ui.is_admin()
 if master.empty:
     st.warning("상품 마스터가 비어 있습니다.")
     st.stop()
-with st.form("trial_form", clear_on_submit=True):
-    c = st.columns(4)
-    dt = c[0].date_input("날짜", value=date.today())
-    sku = c[1].selectbox("SKU", list(master["SKU ID"]), format_func=lambda x: f"{names.get(x, x)} ({x})")
-    qty = c[2].number_input("체험단 개수", min_value=1, value=10, step=1)
-    memo = c[3].text_input("업체 / 메모")
-    c = st.columns(3)
-    unit_auto = float(sup.get(sku, 0)) * vat
-    unit = c[0].number_input("제품가(공급가+VAT, 개당)", min_value=0.0, value=unit_auto, step=100.0,
-                             help="판매 데이터의 매입원가 × 1.1 이 자동 입력됩니다. 필요하면 수정하세요.")
-    fee = c[1].number_input("체험단 대행비(개당, VAT 포함)", min_value=0.0, value=float(fee_default), step=100.0,
-                            help="체험단 업체에 지급하는 개당 대행비를 직접 입력하세요 (VAT 포함 금액).")
-    c[2].markdown(f"**제품금액** {ui.won(qty * unit)}  \n**총비용** {ui.won(qty * unit + qty * fee)}")
-    if st.form_submit_button("➕ 등록", type="primary"):
-        db.add_trial(str(dt), sku, int(qty), unit, fee, memo)
-        st.success("등록했습니다.")
-        st.rerun()
+if admin:
+    st.subheader("체험단 등록")
+    with st.form("trial_form", clear_on_submit=True):
+        c = st.columns(4)
+        dt = c[0].date_input("날짜", value=date.today())
+        sku = c[1].selectbox("SKU", list(master["SKU ID"]), format_func=lambda x: f"{names.get(x, x)} ({x})")
+        qty = c[2].number_input("체험단 개수", min_value=1, value=10, step=1)
+        memo = c[3].text_input("업체 / 메모")
+        c = st.columns(3)
+        unit_auto = float(sup.get(sku, 0)) * vat
+        unit = c[0].number_input("제품가(공급가+VAT, 개당)", min_value=0.0, value=unit_auto, step=100.0,
+                                 help="판매 데이터의 매입원가 × 1.1 이 자동 입력됩니다. 필요하면 수정하세요.")
+        fee = c[1].number_input("체험단 대행비(개당, VAT 포함)", min_value=0.0, value=float(fee_default), step=100.0,
+                                help="체험단 업체에 지급하는 개당 대행비를 직접 입력하세요 (VAT 포함 금액).")
+        c[2].markdown(f"**제품금액** {ui.won(qty * unit)}  \n**총비용** {ui.won(qty * unit + qty * fee)}")
+        if st.form_submit_button("➕ 등록", type="primary"):
+            db.add_trial(str(dt), sku, int(qty), unit, fee, memo)
+            st.success("등록했습니다.")
+            st.rerun()
+
+
+else:
+    st.info("🔐 체험단 등록·수정은 관리자만 할 수 있습니다. 왼쪽 메뉴 아래 **관리자 로그인**에 비밀번호를 입력하세요. 아래 기록과 분석은 누구나 볼 수 있습니다.")
 
 trials = db.read_trials()
-st.subheader("기록 (수정·삭제 가능)")
+st.subheader("기록 (수정·삭제 가능)" if admin else "기록")
 if trials.empty:
     st.info("등록된 체험단 기록이 없습니다.")
     st.stop()
-ed = st.data_editor(trials.drop(columns=["id"]), num_rows="dynamic", width="stretch", hide_index=True,
-                    column_config={"date": st.column_config.TextColumn("날짜(YYYY-MM-DD)"),
-                                   "sku_id": st.column_config.SelectboxColumn("SKU", options=list(master["SKU ID"])),
-                                   "qty": st.column_config.NumberColumn("개수", min_value=1, step=1),
-                                   "unit_price": st.column_config.NumberColumn("제품가(공급가+VAT)", format="₩%.1f"),
-                                   "agency_fee": st.column_config.NumberColumn("대행비(개당)", format="₩%.1f"),
-                                   "memo": "업체/메모"}, key="trial_editor")
-if st.button("💾 변경사항 저장"):
-    t = ed.dropna(subset=["date", "sku_id", "qty"]).copy()
-    bad = pd.to_datetime(t["date"], errors="coerce").isna()
-    if bad.any():
-        st.error("날짜 형식이 잘못된 행이 있습니다 (예: 2026-09-15).")
-    else:
-        t["date"] = pd.to_datetime(t["date"]).dt.strftime("%Y-%m-%d")
-        t[["unit_price", "agency_fee"]] = t[["unit_price", "agency_fee"]].fillna(0)
-        t["memo"] = t["memo"].fillna("")
-        db.replace_trials(t)
-        st.success("저장했습니다.")
-        st.rerun()
+if not admin:
+    st.dataframe(trials.drop(columns=["id"]).rename(columns={"date": "날짜", "sku_id": "SKU", "qty": "개수",
+                                                                "unit_price": "제품가(공급가+VAT)", "agency_fee": "대행비(개당)",
+                                                                "memo": "업체/메모"}), hide_index=True, width="stretch")
+else:
+    ed = st.data_editor(trials.drop(columns=["id"]), num_rows="dynamic", width="stretch", hide_index=True,
+                        column_config={"date": st.column_config.TextColumn("날짜(YYYY-MM-DD)"),
+                                       "sku_id": st.column_config.SelectboxColumn("SKU", options=list(master["SKU ID"])),
+                                       "qty": st.column_config.NumberColumn("개수", min_value=1, step=1),
+                                       "unit_price": st.column_config.NumberColumn("제품가(공급가+VAT)", format="₩%.1f"),
+                                       "agency_fee": st.column_config.NumberColumn("대행비(개당)", format="₩%.1f"),
+                                       "memo": "업체/메모"}, key="trial_editor")
+    if st.button("💾 변경사항 저장"):
+        t = ed.dropna(subset=["date", "sku_id", "qty"]).copy()
+        bad = pd.to_datetime(t["date"], errors="coerce").isna()
+        if bad.any():
+            st.error("날짜 형식이 잘못된 행이 있습니다 (예: 2026-09-15).")
+        else:
+            t["date"] = pd.to_datetime(t["date"]).dt.strftime("%Y-%m-%d")
+            t[["unit_price", "agency_fee"]] = t[["unit_price", "agency_fee"]].fillna(0)
+            t["memo"] = t["memo"].fillna("")
+            db.replace_trials(t)
+            st.success("저장했습니다.")
+            st.rerun()
 
 trials = db.read_trials()
 trials["제품금액"] = trials["qty"] * trials["unit_price"]
