@@ -1,0 +1,22 @@
+# 온살 대시보드 기준값 (대시보드 '데이터 업로드·설정' 화면에서도 수정 가능)
+brand: 온살                 # 판매 CSV에서 이 브랜드 행만 사용
+attribution_days: 14        # 광고 전환 기준 (1 또는 14)
+target_stock_days: 14       # 발주 권장 목표 재고일수
+stock_red_days: 7           # 재고소진 예상일 이하 -> 🔴
+stock_yellow_days: 14       # 재고소진 예상일 이하 -> 🟡
+exclude_min_cost: 5000      # 제외 키워드 후보: 광고비 이상 & 주문 0
+min_clicks: 10              # 이보다 클릭이 적으면 '데이터 부족'
+drop_pct: 30                # 7일평균 판매 급감 기준(%)
+bid_up_max_impressions: 1000   # 입찰 상향 후보: ROAS 양호 & 노출이 이 값 이하
+trial_fee_per_unit: 0       # 체험단 대행비 기본값(개당, VAT 별도). 0 = 매번 직접 입력
+vat: 1.1
+wing_exclude_min_cost: 1500   # 윙: 제외 키워드 후보 광고비 기준(로켓과 따로 관리)
+wing_min_clicks: 10
+wing_bid_up_max_impressions: 1000
+wing_target_roas: 3.0        # 쿠팡윙(3P) 광고 목표 ROAS(배). 3.0 = 300%. 윙은 마진 정보가 없어 손익분기 대신 이 값을 기준으로 봄
+default_breakeven_roas: 4.0 # 마스터에 가격이 없을 때 쓰는 임시 손익분기 ROAS
+keyword_groups:             # 키워드 상품군 분류 규칙 (포함 단어)
+  비타민: ["비타민", "vitamin", "vit"]
+  히알루론: ["히알루론", "hyaluron", "hyal"]
+  MTS/롤러: ["mts", "롤러", "더마"]
+  모공/기타 세럼: ["모공", "세럼", "앰플", "serum", "ampoule"]

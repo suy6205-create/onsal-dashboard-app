@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data/*.db
+.pytest_cache/
+.venv/
+sample_data/
+backups/
