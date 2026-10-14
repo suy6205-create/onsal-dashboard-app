@@ -36,7 +36,7 @@ with t_status:
         "신호": sku["신호"], "품목": sku["품목"], "현재재고": sku["현재재고"], "전일판매": sku["전일판매"].astype(int),
         "7일판매": sku["7일판매"], "30일판매": sku["30일판매"], "7일평균": sku["7일평균"].round(2),
         "소진예상일": sku["소진예상일"].apply(lambda v: "판매없음" if v is None or pd.isna(v) else f"{v:.1f}일"),
-        "발주권장": sku["발주권장"], "품절": sku["품절"].map({True: "품절", False: ""}),
+        "발주권장": sku["발주권장"], "품절": [("품절" if s else ("당일 품절→입고됨" if r else "")) for s, r in zip(sku["품절"], sku["당일품절후입고"])],
         "재고금액": sku["재고금액"].apply(ui.won),
     })
     st.caption("🔴 위험 · 🟡 주의 · 🟢 양호 — 기준: 재고소진 예상일 "

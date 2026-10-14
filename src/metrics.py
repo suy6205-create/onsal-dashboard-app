@@ -158,7 +158,9 @@ def sku_table(daily: pd.DataFrame, master: pd.DataFrame, asof, cfg: dict) -> pd.
         dl = days_of_stock(stock, avg7)
         name = mi["품목"].get(sku, "") if sku in mi.index else ""
         ok = last is None or str(last["orderable"]).strip() in ("발주가능", "", "nan", "None")
-        sold = bool(last["soldout"]) if last is not None else False
+        flag = bool(last["soldout"]) if last is not None else False
+        sold = last is not None and stock <= 0      # 실제 재고가 없을 때만 '품절' (쿠팡 품절여부 표시는 당일 이력이라 입고 후에도 YES 로 남을 수 있음)
+        recovered = flag and stock > 0              # 품절여부=YES 이지만 현재 재고가 있음(입고되어 회복) -> 참고 표시만
         sup = int(last["supply_cost"]) if last is not None else 0
         unit_cost = float(mi["원가"].get(sku, 0)) if sku in mi.index else 0.0
         rows.append({
@@ -175,6 +177,7 @@ def sku_table(daily: pd.DataFrame, master: pd.DataFrame, asof, cfg: dict) -> pd.
             "소진예상일": dl,
             "발주권장": reorder_qty(avg7, stock, cfg["target_stock_days"]),
             "품절": sold,
+            "당일품절후입고": recovered,
             "발주가능": ok,
             "발주가능상태": str(last["orderable"]) if last is not None else "",
             "재고금액": stock_value(stock, unit_cost),

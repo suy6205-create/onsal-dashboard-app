@@ -136,3 +136,20 @@ def test_wing_rows_use_target_roas_instead_of_breakeven():
     p = M.prep_ad(ad, 14, amap, _master(), 4.0, {"1": 6000}, wing_target=3.0)
     assert p.loc[p["sale_type"] == "3P", "be_roas"].iloc[0] == 3.0
     assert p.loc[p["sale_type"] == "Retail", "be_roas"].iloc[0] == pytest.approx(10000 / 2000)
+
+
+def _one_day(stock, soldout_flag, outbound=2):
+    return pd.DataFrame({"date": ["2026-09-30"], "sku_id": ["1"], "sku_name": ["a"], "barcode": [""],
+                         "orderable": ["발주가능"], "orderable_detail": [""], "inbound": [0], "outbound": [outbound],
+                         "stock": [stock], "supply_cost": [6000], "soldout": [soldout_flag]})
+
+
+def test_soldout_flag_ignored_when_stock_present():
+    # 쿠팡 품절여부=YES 이지만 재고가 입고되어 있으면 품절/빨간불이 아니다
+    r = M.sku_table(_one_day(40, 1, outbound=7), _master(), "2026-09-30", CFG).iloc[0]
+    assert not r["품절"] and r["당일품절후입고"] and r["신호"] == "🟢"
+
+
+def test_zero_stock_is_soldout_even_without_flag():
+    r = M.sku_table(_one_day(0, 0, outbound=0), _master(), "2026-09-30", CFG).iloc[0]
+    assert r["품절"] and r["신호"] == "🔴"
