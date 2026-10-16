@@ -12,10 +12,11 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, create_engine, inspect, text
 
 from .loaders import AD_NUM_COLS, AD_TEXT_COLS, DAILY_COLS
 
+DEFAULT_BRAND = "온살"   # brand 칸이 없던 예전 데이터의 기본 브랜드
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "data" / "onsal.db"
 
@@ -72,11 +73,11 @@ def _ddl(dialect: str) -> list[str]:
     ad_cols = ",\n  ".join([f"{c} TEXT" for c in AD_TEXT_COLS] + [f"{c} DOUBLE PRECISION" for c in AD_NUM_COLS])
     return [
         """CREATE TABLE IF NOT EXISTS sales_center (
-  date TEXT, sku_id TEXT, center TEXT, sku_name TEXT, barcode TEXT, orderable TEXT,
+  date TEXT, sku_id TEXT, center TEXT, sku_name TEXT, brand TEXT, barcode TEXT, orderable TEXT,
   orderable_detail TEXT, inbound INTEGER, outbound INTEGER, stock INTEGER, supply_cost INTEGER, soldout INTEGER,
   PRIMARY KEY (date, sku_id, center))""",
         """CREATE TABLE IF NOT EXISTS sales_daily (
-  date TEXT, sku_id TEXT, sku_name TEXT, barcode TEXT, orderable TEXT, orderable_detail TEXT,
+  date TEXT, sku_id TEXT, sku_name TEXT, brand TEXT, barcode TEXT, orderable TEXT, orderable_detail TEXT,
   inbound INTEGER, outbound INTEGER, stock INTEGER, supply_cost INTEGER, soldout INTEGER,
   PRIMARY KEY (date, sku_id))""",
         f"""CREATE TABLE IF NOT EXISTS ad_rows (
@@ -97,6 +98,13 @@ def _create_schema(eng) -> None:
     with eng.begin() as c:
         for stmt in _ddl(eng.dialect.name):
             c.execute(text(stmt))
+    # 브랜드가 하나였던 예전 DB: brand 컬럼을 추가하고 기존 데이터는 기본 브랜드로 채운다
+    insp = inspect(eng)
+    for table in ("sales_center", "sales_daily"):
+        if "brand" not in [col["name"] for col in insp.get_columns(table)]:
+            with eng.begin() as c:
+                c.execute(text(f"ALTER TABLE {table} ADD COLUMN brand TEXT"))
+                c.execute(text(f"UPDATE {table} SET brand = :b WHERE brand IS NULL"), {"b": DEFAULT_BRAND})
     if eng.dialect.name == "sqlite":   # 예전 로컬 DB: uploads.rows -> n_rows (rows 는 일부 DB 에서 예약어 취급)
         with eng.begin() as c:
             cols = [r[1] for r in c.execute(text("PRAGMA table_info(uploads)"))]
@@ -150,12 +158,13 @@ def upsert_sales(center: pd.DataFrame, daily: pd.DataFrame, filename: str = "") 
     if daily.empty:
         return
     dates = sorted(daily["date"].unique())
-    dq = bindparam("dates", expanding=True)
+    brands = sorted(daily["brand"].unique())    # 같은 날짜라도 이 파일에 들어 있는 브랜드의 행만 교체
     with conn() as c:
-        c.execute(text("DELETE FROM sales_center WHERE date IN :dates").bindparams(dq), {"dates": dates})
-        c.execute(text("DELETE FROM sales_daily WHERE date IN :dates").bindparams(bindparam("dates", expanding=True)),
-                  {"dates": dates})
-        _chunked_insert(center[["date", "sku_id", "center", "sku_name", "barcode", "orderable", "orderable_detail",
+        for t in ("sales_center", "sales_daily"):
+            c.execute(text(f"DELETE FROM {t} WHERE date IN :dates AND brand IN :brands").bindparams(
+                bindparam("dates", expanding=True), bindparam("brands", expanding=True)),
+                {"dates": dates, "brands": brands})
+        _chunked_insert(center[["date", "sku_id", "center", "sku_name", "brand", "barcode", "orderable", "orderable_detail",
                                 "inbound", "outbound", "stock", "supply_cost", "soldout"]], "sales_center", c)
         _chunked_insert(daily[DAILY_COLS], "sales_daily", c)
         _log(c, filename, "판매", dates[0], dates[-1], len(center))

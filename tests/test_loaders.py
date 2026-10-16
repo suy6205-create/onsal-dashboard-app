@@ -69,3 +69,16 @@ def test_ad_missing_columns_message():
     with pytest.raises(FileFormatError) as e:
         L.normalize_ad_df(pd.DataFrame({"캠페인명": ["a"], "광고비": [1]}))
     assert "키워드" in str(e.value)
+
+
+def test_multi_brand_filter_and_brand_column():
+    df = _sales_df([
+        {"브랜드": "온살", "SKU ID": 1, "출고수량": 2},
+        {"브랜드": "루메아카이브", "SKU ID": 2, "출고수량": 3},
+        {"브랜드": "타사", "SKU ID": 3, "출고수량": 99},
+    ])
+    p = L.normalize_sales_df(df, ["온살", "루메아카이브"])
+    assert p.total_rows == 3 and p.brand_rows == 2
+    assert dict(zip(p.daily["sku_id"], p.daily["brand"])) == {"1": "온살", "2": "루메아카이브"}
+    assert len(L.normalize_sales_df(df, "온살").daily) == 1                      # 문자열 하나도 그대로 동작
+    assert L.as_brand_list("온살, 루메아카이브 ,") == ["온살", "루메아카이브"]

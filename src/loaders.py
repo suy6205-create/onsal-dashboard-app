@@ -51,7 +51,7 @@ SALES_COLS = {
     "품절여부": "soldout",
 }
 SALES_FILE_RE = re.compile(r"basic_operation_rocket_(\d{8})(\d{8})")
-DAILY_COLS = ["date", "sku_id", "sku_name", "barcode", "orderable", "orderable_detail",
+DAILY_COLS = ["date", "sku_id", "sku_name", "brand", "barcode", "orderable", "orderable_detail",
               "inbound", "outbound", "stock", "supply_cost", "soldout"]
 
 
@@ -81,7 +81,7 @@ def aggregate_centers(center: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=DAILY_COLS)
     g = center.groupby(["date", "sku_id"], sort=True)
     out = g.agg(
-        sku_name=("sku_name", "first"), barcode=("barcode", "first"),
+        sku_name=("sku_name", "first"), brand=("brand", "first"), barcode=("barcode", "first"),
         orderable=("orderable", "first"), orderable_detail=("orderable_detail", "first"),
         inbound=("inbound", "sum"), outbound=("outbound", "sum"), stock=("stock", "sum"),
         supply_cost=("supply_cost", "first"), soldout=("soldout", "max"),
@@ -89,7 +89,16 @@ def aggregate_centers(center: pd.DataFrame) -> pd.DataFrame:
     return out[DAILY_COLS]
 
 
-def normalize_sales_df(df: pd.DataFrame, brand: str) -> ParsedSales:
+def as_brand_list(brands) -> list[str]:
+    """'온살' 또는 ['온살', '루메아카이브'] 또는 '온살, 루메아카이브' -> ['온살', '루메아카이브']"""
+    if isinstance(brands, str):
+        brands = brands.split(",")
+    return [b.strip() for b in brands if str(b).strip()]
+
+
+def normalize_sales_df(df: pd.DataFrame, brand) -> ParsedSales:
+    """brand: 수집할 브랜드(문자열 또는 목록). 해당 브랜드 행만 남기고 날짜+SKU 로 합산한다."""
+    brands = as_brand_list(brand)
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     missing = [c for c in SALES_COLS if c not in df.columns]
@@ -98,7 +107,8 @@ def normalize_sales_df(df: pd.DataFrame, brand: str) -> ParsedSales:
             "로켓 판매 리포트가 아닌 것 같습니다. 없는 컬럼: " + ", ".join(missing))
     df = df.dropna(subset=["날짜"])
     total = len(df)
-    df = df[df["브랜드"].astype(str).str.strip() == brand].copy()
+    df["브랜드"] = df["브랜드"].astype(str).str.strip()
+    df = df[df["브랜드"].isin(brands)].copy()
     c = df[list(SALES_COLS)].rename(columns=SALES_COLS)
     c["date"] = pd.to_datetime(c["date"].apply(clean_id), format="%Y%m%d", errors="coerce")
     c = c.dropna(subset=["date"])
@@ -114,7 +124,7 @@ def normalize_sales_df(df: pd.DataFrame, brand: str) -> ParsedSales:
                        brand_rows=len(c), dates=sorted(c["date"].unique()))
 
 
-def parse_sales_csv(file, brand: str) -> ParsedSales:
+def parse_sales_csv(file, brand) -> ParsedSales:
     try:
         df = pd.read_csv(file, encoding="utf-8-sig", dtype={"바코드": str, "SKU ID": str})
     except Exception as e:  # noqa: BLE001
@@ -220,16 +230,17 @@ def guess_bundle(name: str) -> int:
     return 1
 
 
-def draft_ad_map(ad: pd.DataFrame, master: pd.DataFrame, brand: str,
+def draft_ad_map(ad: pd.DataFrame, master: pd.DataFrame, brand,
                  existing: pd.DataFrame | None = None) -> pd.DataFrame:
     """브랜드명이 들어간 옵션 중 매핑에 없는 것을 이름 규칙으로 추정해 초안 생성."""
     from .config import MAP_COLS
+    brands = as_brand_list(brand)
     known = set(existing["광고옵션ID"]) if existing is not None and len(existing) else set()
     rows: dict[str, dict] = {}
     for opt_col, name_col in (("ad_option_id", "ad_product"), ("conv_option_id", "conv_product")):
         sub = ad[[opt_col, name_col]].drop_duplicates()
         for oid, name in zip(sub[opt_col], sub[name_col]):
-            if not oid or oid in known or oid in rows or brand not in str(name):
+            if not oid or oid in known or oid in rows or not any(b in str(name) for b in brands):
                 continue
             sku = ""
             for _, m in master.iterrows():

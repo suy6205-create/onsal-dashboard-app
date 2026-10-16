@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import timedelta
 
 import numpy as np
@@ -157,6 +158,10 @@ def sku_table(daily: pd.DataFrame, master: pd.DataFrame, asof, cfg: dict) -> pd.
         stock = int(last["stock"]) if last is not None else 0
         dl = days_of_stock(stock, avg7)
         name = mi["품목"].get(sku, "") if sku in mi.index else ""
+        if "브랜드" in mi.columns and sku in mi.index:
+            brand_name = mi["브랜드"].get(sku, "")
+        else:
+            brand_name = last["brand"] if (last is not None and "brand" in last.index) else ""
         ok = last is None or str(last["orderable"]).strip() in ("발주가능", "", "nan", "None")
         flag = bool(last["soldout"]) if last is not None else False
         sold = last is not None and stock <= 0      # 실제 재고가 없을 때만 '품절' (쿠팡 품절여부 표시는 당일 이력이라 입고 후에도 YES 로 남을 수 있음)
@@ -165,6 +170,7 @@ def sku_table(daily: pd.DataFrame, master: pd.DataFrame, asof, cfg: dict) -> pd.
         unit_cost = float(mi["원가"].get(sku, 0)) if sku in mi.index else 0.0
         rows.append({
             "sku_id": sku,
+            "브랜드": brand_name,
             "품목": name or (last["sku_name"] if last is not None else sku),
             "sku_name": last["sku_name"] if last is not None else "",
             "현재재고": stock,
@@ -297,7 +303,7 @@ def quadrant(cost, roas_v, be, cost_split) -> str:
     return "관찰"
 
 
-def keyword_group_tags(keyword: str, groups: dict, brand: str) -> dict:
+def keyword_group_tags(keyword: str, groups: dict, brand) -> dict:
     """키워드 그룹핑: 브랜드/일반, 영문/한글, 상품군(settings.keyword_groups 규칙)."""
     k = str(keyword).lower()
     has_hangul = any("가" <= ch <= "힣" for ch in k)
@@ -306,7 +312,8 @@ def keyword_group_tags(keyword: str, groups: dict, brand: str) -> dict:
         if any(str(w).lower() in k for w in words):
             prod = name
             break
-    return {"브랜드": "브랜드" if brand.lower() in k else "일반",
+    brands = [brand] if isinstance(brand, str) else list(brand)
+    return {"브랜드": "브랜드" if any(b.lower() in k for b in brands) else "일반",
             "언어": "한글" if has_hangul else "영문", "상품군": prod}
 
 
@@ -359,14 +366,20 @@ def integrated_by_sku(daily: pd.DataFrame, master: pd.DataFrame, ad_p: pd.DataFr
     return pd.DataFrame(rows)
 
 
-def unmapped_options(ad_p: pd.DataFrame, brand: str) -> pd.DataFrame:
+def _has_brand(series: pd.Series, brand) -> pd.Series:
+    brands = [brand] if isinstance(brand, str) else list(brand)
+    pat = "|".join(re.escape(b) for b in brands) or "(?!)"
+    return series.str.contains(pat, regex=True)
+
+
+def unmapped_options(ad_p: pd.DataFrame, brand) -> pd.DataFrame:
     """브랜드 상품인데 매핑표에 없는(SKU 미확정) 광고/전환 옵션."""
     if ad_p.empty:
         return pd.DataFrame(columns=["옵션ID", "상품명", "광고비"])
-    a = ad_p[(ad_p["exec_sku"] == "") & ad_p["ad_product"].str.contains(brand, regex=False)][
+    a = ad_p[(ad_p["exec_sku"] == "") & _has_brand(ad_p["ad_product"], brand)][
         ["ad_option_id", "ad_product", "cost"]].rename(
         columns={"ad_option_id": "옵션ID", "ad_product": "상품명", "cost": "광고비"})
-    b = ad_p[(ad_p["conv_sku"] == "") & ad_p["conv_product"].str.contains(brand, regex=False)][
+    b = ad_p[(ad_p["conv_sku"] == "") & _has_brand(ad_p["conv_product"], brand)][
         ["conv_option_id", "conv_product"]].rename(columns={"conv_option_id": "옵션ID", "conv_product": "상품명"})
     b["광고비"] = 0.0
     return pd.concat([a, b]).groupby(["옵션ID", "상품명"], as_index=False)["광고비"].sum()
@@ -390,3 +403,16 @@ def trial_effect(daily: pd.DataFrame, sku_id: str, date, qty: int, trial_cost: f
     return {"전7일평균": before, "후7일평균": after, "증감": pct_change(after, before),
             "추가판매(7일)": uplift_units, "회수추정액": recovered,
             "회수율": safe_div(recovered, trial_cost, None), "후기간완료": bool(complete)}
+
+
+def ad_row_brand(ad: pd.DataFrame, ad_map: pd.DataFrame, master: pd.DataFrame, brands: list[str]) -> pd.Series:
+    """광고 행이 어느 브랜드 것인지: ① 광고집행 옵션→SKU→상품 마스터의 브랜드 ② 상품명에 브랜드명 포함 ③ 모르면 ''."""
+    if ad.empty:
+        return pd.Series(dtype=str)
+    sku_of = dict(zip(ad_map["광고옵션ID"], ad_map["SKU ID"])) if len(ad_map) else {}
+    brand_of_sku = dict(zip(master["SKU ID"], master["브랜드"])) if len(master) and "브랜드" in master else {}
+    from_map = ad["ad_option_id"].map(sku_of).map(brand_of_sku)
+
+    def by_name(name: str) -> str:
+        return next((b for b in brands if b in str(name)), "")
+    return from_map.where(from_map.notna() & (from_map != ""), ad["ad_product"].map(by_name)).fillna("")

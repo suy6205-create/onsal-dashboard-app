@@ -13,11 +13,11 @@ def add_new_skus_to_master(daily: pd.DataFrame) -> list[str]:
     known = set(master["SKU ID"])
     new = []
     rows = []
-    for sku, name in daily[["sku_id", "sku_name"]].drop_duplicates("sku_id").itertuples(index=False):
+    for sku, name, brand in daily[["sku_id", "sku_name", "brand"]].drop_duplicates("sku_id").itertuples(index=False):
         if sku not in known:
             new.append(sku)
             rows.append({"SKU ID": sku, "품목": name, "판매가": 0, "할인": 0, "원가": 0,
-                         "판매수수료율": 0, "운영중": "Y", "광고명키워드": ""})
+                         "판매수수료율": 0, "운영중": "Y", "광고명키워드": "", "브랜드": brand})
     if rows:
         config.save_master(pd.concat([master, pd.DataFrame(rows)], ignore_index=True))
     return new
@@ -33,7 +33,7 @@ def ingest_sales(parsed: ParsedSales, filename: str = "") -> list[str]:
     return add_new_skus_to_master(parsed.daily)
 
 
-def ingest_ad(ad: pd.DataFrame, start: str, end: str, filename: str = "", brand: str = "온살") -> int:
+def ingest_ad(ad: pd.DataFrame, start: str, end: str, filename: str = "", brand="온살") -> int:
     """광고 저장 + 매핑표 초안 자동 생성(기존 매핑은 보존). 새로 추가된 초안 수를 반환."""
     db.upsert_ad(ad, start, end, filename)
     existing = config.load_map()

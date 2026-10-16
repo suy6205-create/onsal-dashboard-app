@@ -36,16 +36,19 @@ with t_up:
             st.markdown(f"**📄 {name}**")
             try:
                 if name.lower().endswith(".csv"):
-                    ps = L.parse_sales_csv(BytesIO(raw), cfg["brand"])
+                    BRANDS = config.brand_list(cfg)
+                    ps = L.parse_sales_csv(BytesIO(raw), BRANDS)
                     if ps.brand_rows == 0:
-                        st.error(f"'{cfg['brand']}' 브랜드 행이 없습니다. (전체 {ps.total_rows}행) 브랜드명은 설정에서 바꿀 수 있어요.")
+                        st.error(f"수집 브랜드({', '.join(BRANDS)}) 행이 없습니다. (전체 {ps.total_rows}행) 브랜드명은 기준값 탭에서 바꿀 수 있어요.")
                         continue
                     fn = L.parse_sales_filename(name)
                     ns = service.new_skus(ps.daily)
                     have = set(db.read_sales_daily()["date"]) & set(ps.dates)
                     c = st.columns(4)
                     c[0].metric("인식된 날짜", f"{ps.dates[0]}" + (f" ~ {ps.dates[-1]}" if len(ps.dates) > 1 else ""))
-                    c[1].metric(f"{cfg['brand']} 행 수", f"{ps.brand_rows} / {ps.total_rows}")
+                    per_brand = ps.center["brand"].value_counts().to_dict()
+                    c[1].metric("수집 행 수", f"{ps.brand_rows} / {ps.total_rows}",
+                                help="브랜드별: " + ", ".join(f"{b} {n}행" for b, n in per_brand.items()))
                     c[2].metric("센터 합산 후", f"{len(ps.daily)}건")
                     c[3].metric("신규 SKU", f"{len(ns)}개")
                     if fn and (fn[0], fn[1]) != (ps.dates[0], ps.dates[-1]):
@@ -70,7 +73,7 @@ with t_up:
                         st.error("시작일이 종료일보다 늦습니다.")
                         continue
                     kind = "일자 데이터" if s == e else "기간 데이터(일자 차트에는 섞지 않음)"
-                    draft = L.draft_ad_map(ad, master, cfg["brand"], amap)
+                    draft = L.draft_ad_map(ad, master, config.brand_list(cfg), amap)
                     unmapped = int((draft["SKU ID"] == "").sum())
                     cc = st.columns(4)
                     cc[0].metric("행 수", len(ad))
@@ -101,7 +104,7 @@ with t_up:
                 new = service.ingest_sales(sv[2], sv[1])
                 st.success(f"{sv[1]} 저장 완료" + (f" · 신규 SKU {len(new)}개 마스터 추가" if new else ""))
             else:
-                n = service.ingest_ad(sv[2], sv[3], sv[4], sv[1], cfg["brand"])
+                n = service.ingest_ad(sv[2], sv[3], sv[4], sv[1], config.brand_list(cfg))
                 st.success(f"{sv[1]} 저장 완료 ({sv[3]}~{sv[4]})" + (f" · 매핑 초안 {n}개 추가" if n else ""))
         pend = service.pending_price_skus()
         if len(pend):
@@ -155,6 +158,7 @@ with t_master:
     m = config.load_master()
     ed = st.data_editor(m, num_rows="dynamic", width="stretch", hide_index=True, key="master_ed", column_config={
         "SKU ID": st.column_config.TextColumn(required=True), "운영중": st.column_config.SelectboxColumn(options=["Y", "N"]),
+        "브랜드": st.column_config.SelectboxColumn(options=config.brand_list(cfg), help="판매·광고를 브랜드별로 나눠 볼 때 쓰입니다"),
         "광고명키워드": st.column_config.TextColumn(help="광고 상품명에 이 단어가 있으면 이 SKU로 자동 매핑 (예: 비타민)")})
     if st.button("💾 마스터 저장"):
         e = ed.dropna(subset=["SKU ID"]).copy()
@@ -162,7 +166,7 @@ with t_master:
         if e["SKU ID"].duplicated().any():
             st.error("SKU ID가 중복됩니다.")
         else:
-            e = e.fillna({"판매가": 0, "할인": 0, "원가": 0, "판매수수료율": 0, "운영중": "Y", "품목": "", "광고명키워드": ""})
+            e = e.fillna({"판매가": 0, "할인": 0, "원가": 0, "판매수수료율": 0, "운영중": "Y", "품목": "", "광고명키워드": "", "브랜드": config.DEFAULT_BRAND})
             config.save_master(e)
             st.success("저장했습니다.")
     chg = db.read_sales_daily()
@@ -197,7 +201,7 @@ with t_map:
         if ad.empty:
             st.info("광고 데이터가 없습니다.")
         else:
-            dr = L.draft_ad_map(ad, master, cfg["brand"], mp)
+            dr = L.draft_ad_map(ad, master, config.brand_list(cfg), mp)
             if len(dr):
                 config.save_map(pd.concat([mp, dr], ignore_index=True))
                 st.success(f"{len(dr)}개 추가")
@@ -212,7 +216,10 @@ with t_map:
 with t_cfg:
     c = st.columns(3)
     new = dict(cfg)
-    new["brand"] = c[0].text_input("판매 데이터 필터 브랜드", cfg["brand"])
+    brands_txt = c[0].text_input("수집 브랜드 (쉼표로 구분)", ", ".join(config.brand_list(cfg)),
+                                 help="판매 CSV에서 이 브랜드 행만 저장합니다. 예: 온살, 루메아카이브")
+    new["brands"] = L.as_brand_list(brands_txt) or [cfg["brand"]]
+    new["brand"] = new["brands"][0]
     new["attribution_days"] = c[1].radio("광고 전환 기준(기본)", [14, 1], index=0 if cfg["attribution_days"] == 14 else 1, horizontal=True)
     new["target_stock_days"] = c[2].number_input("목표 재고일수 (발주 권장 기준)", 1, 90, int(cfg["target_stock_days"]))
     c = st.columns(3)

@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src import config
 from src import metrics as M
 from src import ui
 
@@ -49,13 +50,14 @@ ui.card(k[3], "TACoS", ui.pct(M.safe_div(tot["광고비"], tot["소비자가매�
         "광고비 ÷ 소비자가매출. 전체 매출 대비 광고비 비중", inverse=True)
 ui.card(k[4], "광고 의존도", ui.pct(dep), "광고 기여 판매수량 ÷ 전체 판매수량. 광고 기여 = 광고 총 판매수량 × 묶음수량")
 
-un = M.unmapped_options(p, cfg["brand"])
+BRANDS = config.brand_list(cfg)
+un = M.unmapped_options(p, BRANDS)
 if len(un):
     st.warning(f"SKU에 매핑되지 않은 광고 옵션 {len(un)}개 (광고비 ₩{un['광고비'].sum():,.0f}) — 광고 기여 판매·광고비가 SKU에 배분되지 않았습니다. "
                "'⚙️ 데이터 업로드·설정' → 광고 매핑표에서 확정하세요.")
     with st.expander("미매핑 옵션 보기"):
         st.dataframe(un, hide_index=True, width="stretch")
-other = p[(p["conv_sku"] == "") & ~p["conv_product"].str.contains(cfg["brand"], regex=False)]
+other = p[(p["conv_sku"] == "") & ~M._has_brand(p["conv_product"], BRANDS)]
 if len(other):
     st.caption(f"ℹ️ 타 브랜드 상품으로 전환된 광고 행 {len(other)}개(전환매출 ₩{other['rev'].sum():,.0f})는 광고 기여 판매에서 제외했습니다.")
 

@@ -153,3 +153,12 @@ def test_soldout_flag_ignored_when_stock_present():
 def test_zero_stock_is_soldout_even_without_flag():
     r = M.sku_table(_one_day(0, 0, outbound=0), _master(), "2026-09-30", CFG).iloc[0]
     assert r["품절"] and r["신호"] == "🔴"
+
+
+def test_ad_row_brand_uses_map_then_name():
+    ad = pd.DataFrame({"ad_option_id": ["A", "B", "C"], "ad_product": ["온살 세럼", "무명 상품", "루메아카이브 로션"]})
+    amap = pd.DataFrame({"광고옵션ID": ["A", "B"], "SKU ID": ["1", "2"], "묶음수량": [1, 1], "광고상품명": ["", ""], "비고": ["", ""]})
+    master = pd.DataFrame({"SKU ID": ["1", "2"], "브랜드": ["온살", "루메아카이브"]})
+    got = M.ad_row_brand(ad, amap, master, ["온살", "루메아카이브"])
+    assert list(got) == ["온살", "루메아카이브", "루메아카이브"]   # C 는 매핑이 없어 상품명으로 판별
+    assert M.unmapped_options(pd.DataFrame(), ["온살"]).empty

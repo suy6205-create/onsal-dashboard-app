@@ -2,7 +2,7 @@
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from src import actions
+from src import actions, config
 from src import metrics as M
 from src import ui
 
@@ -87,7 +87,7 @@ def render(code: str, label: str, icon: str) -> None:
 
     with t_grp:
         s = p[p["placement_group"] == "검색"].copy()
-        tags = s["keyword"].apply(lambda x: M.keyword_group_tags(x, cfg.get("keyword_groups", {}), cfg["brand"]))
+        tags = s["keyword"].apply(lambda x: M.keyword_group_tags(x, cfg.get("keyword_groups", {}), config.brand_list(cfg)))
         for dim in ("브랜드", "언어", "상품군"):
             s[dim] = [t[dim] for t in tags]
         dim = st.radio("묶는 기준", ["브랜드", "언어", "상품군"], horizontal=True,

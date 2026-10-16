@@ -14,7 +14,7 @@ def tmpdb(tmp_path, monkeypatch):
 
 
 def _sales(outbound=3):
-    row = {"date": "2026-09-30", "sku_id": "1", "center": "VF107", "sku_name": "a", "barcode": "8800000000001",
+    row = {"date": "2026-09-30", "sku_id": "1", "center": "VF107", "sku_name": "a", "brand": "온살", "barcode": "8800000000001",
            "orderable": "발주가능", "orderable_detail": "정상", "inbound": 0, "outbound": outbound, "stock": 10,
            "supply_cost": 6000, "soldout": 0}
     c = pd.DataFrame([row])
@@ -68,3 +68,35 @@ def test_config_roundtrip_in_db(tmpdb):
     assert config.load_settings()["wing_target_roas"] == 2.5
     config.save_map(config.load_map())
     assert list(config.load_map().columns) == config.MAP_COLS
+
+
+def test_old_db_without_brand_column_is_migrated(tmp_path, monkeypatch):
+    import sqlalchemy as sa
+    path = tmp_path / "old.db"
+    eng = sa.create_engine(f"sqlite:///{path.as_posix()}")
+    with eng.begin() as c:   # 브랜드 컬럼이 없던 예전 스키마
+        for t in ("sales_center", "sales_daily"):
+            c.execute(sa.text(f"CREATE TABLE {t} (date TEXT, sku_id TEXT, sku_name TEXT, barcode TEXT, orderable TEXT, "
+                              "orderable_detail TEXT, inbound INTEGER, outbound INTEGER, stock INTEGER, supply_cost INTEGER, soldout INTEGER)"))
+        c.execute(sa.text("INSERT INTO sales_daily VALUES ('2026-09-30','1','a','','발주가능','',0,1,5,100,0)"))
+    eng.dispose()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{path.as_posix()}")
+    db.reset_engine()
+    got = db.read_sales_daily()
+    db.reset_engine()
+    assert list(got["brand"]) == ["온살"]
+
+
+def test_upsert_replaces_only_brands_in_file(tmpdb):
+    def frame(brand, sku, out):
+        row = {"date": "2026-10-15", "sku_id": sku, "center": "VF107", "sku_name": "a", "brand": brand, "barcode": "1",
+               "orderable": "발주가능", "orderable_detail": "", "inbound": 0, "outbound": out, "stock": 5,
+               "supply_cost": 6000, "soldout": 0}
+        c = pd.DataFrame([row])
+        return c, L.aggregate_centers(c)
+    both = pd.concat([frame("온살", "1", 1)[0], frame("루메아카이브", "2", 2)[0]], ignore_index=True)
+    db.upsert_sales(both, L.aggregate_centers(both), "all.csv")
+    c, d = frame("온살", "1", 9)           # 온살만 다시 올림 -> 루메아카이브 행은 그대로
+    db.upsert_sales(c, d, "onsal_only.csv")
+    got = db.read_sales_daily().set_index("sku_id")
+    assert got.loc["1", "outbound"] == 9 and got.loc["2", "outbound"] == 2 and len(got) == 2

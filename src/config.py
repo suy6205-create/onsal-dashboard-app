@@ -18,11 +18,12 @@ SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
 MASTER_PATH = CONFIG_DIR / "product_master.csv"
 MAP_PATH = CONFIG_DIR / "ad_sku_map.csv"
 
-MASTER_COLS = ["SKU ID", "품목", "판매가", "할인", "원가", "판매수수료율", "운영중", "광고명키워드"]
+MASTER_COLS = ["SKU ID", "품목", "판매가", "할인", "원가", "판매수수료율", "운영중", "광고명키워드", "브랜드"]
+DEFAULT_BRAND = "온살"   # 브랜드 칸이 없던 예전 데이터는 모두 이 브랜드
 MAP_COLS = ["광고옵션ID", "광고상품명", "SKU ID", "묶음수량", "비고"]
 
 DEFAULTS = {
-    "brand": "온살", "attribution_days": 14, "target_stock_days": 14,
+    "brand": "온살", "brands": ["온살", "루메아카이브"], "attribution_days": 14, "target_stock_days": 14,
     "stock_red_days": 7, "stock_yellow_days": 14, "exclude_min_cost": 5000,
     "min_clicks": 10, "drop_pct": 30, "bid_up_max_impressions": 1000,
     "wing_target_roas": 3.0,
@@ -39,6 +40,12 @@ def _load_text(name: str, seed: Path) -> str:
         txt = seed.read_text(encoding="utf-8-sig") if seed.exists() else ""
         db.kv_set(name, txt)
     return txt
+
+
+def brand_list(cfg: dict) -> list[str]:
+    """수집 대상 브랜드 목록 (settings.brands, 없으면 단일 brand)."""
+    b = cfg.get("brands") or [cfg.get("brand", DEFAULT_BRAND)]
+    return [str(x).strip() for x in b if str(x).strip()]
 
 
 # ---------------------------------------------------------------- settings
@@ -61,11 +68,12 @@ def load_master() -> pd.DataFrame:
     df = _csv(_load_text("product_master", MASTER_PATH), {"SKU ID": str})
     for c in MASTER_COLS:
         if c not in df.columns:
-            df[c] = "" if c in ("SKU ID", "품목", "운영중", "광고명키워드") else 0
+            df[c] = "" if c in ("SKU ID", "품목", "운영중", "광고명키워드", "브랜드") else 0
     for c in ["판매가", "할인", "원가", "판매수수료율"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["운영중"] = df["운영중"].fillna("Y")
     df["광고명키워드"] = df["광고명키워드"].fillna("")
+    df["브랜드"] = df["브랜드"].replace("", pd.NA).fillna(DEFAULT_BRAND).astype(str)
     return df[MASTER_COLS]
 
 

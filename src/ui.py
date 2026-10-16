@@ -141,10 +141,28 @@ def setup(title: str, icon: str = "📊") -> dict:
 
 
 def load_all(cfg: dict) -> dict:
-    return {
+    """데이터를 읽고, 사이드바에서 고른 브랜드(전체/브랜드별)로 판매·마스터·체험단·광고를 걸러서 돌려준다."""
+    d = {
         "master": config.load_master(), "map": config.load_map(),
         "daily": db.read_sales_daily(), "ad": db.read_ad(), "trials": db.read_trials(),
     }
+    brands = config.brand_list(cfg)
+    d["brands"] = brands
+    if len(brands) <= 1:
+        d["brand_sel"] = "전체"
+        return d
+    sel = st.sidebar.selectbox("🏷️ 브랜드", ["전체"] + brands, key="brand_sel",
+                               help="판매·재고·광고·체험단 화면을 브랜드별로 나눠서 봅니다. '전체'는 모든 브랜드 합산.")
+    d["brand_sel"] = sel
+    if sel == "전체":
+        return d
+    master_all = d["master"]
+    d["ad"] = d["ad"][M.ad_row_brand(d["ad"], d["map"], master_all, brands).eq(sel).to_numpy()] if len(d["ad"]) else d["ad"]
+    d["master"] = master_all[master_all["브랜드"] == sel].reset_index(drop=True)
+    skus = set(d["master"]["SKU ID"])
+    d["daily"] = d["daily"][d["daily"]["brand"] == sel].reset_index(drop=True)
+    d["trials"] = d["trials"][d["trials"]["sku_id"].isin(skus)].reset_index(drop=True)
+    return d
 
 
 def no_data_stop(d: dict, need_ad: bool = False) -> None:
