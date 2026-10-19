@@ -1,13 +1,14 @@
 """📦 판매·재고"""
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src import config, db
 from src import metrics as M
 from src import ui
-from src.export import to_excel_bytes
+from src.export import build_po_xlsx, po_filename
 
 cfg = ui.setup("판매·재고", "📦")
 d = ui.load_all(cfg)
@@ -28,29 +29,91 @@ if len(low) and low.iloc[0]["소진예상일"] <= cfg["stock_yellow_days"]:
 else:
     ui.headline(["모든 운영중 SKU의 재고가 안전 범위입니다."])
 
-t_status, t_heat, t_month, t_order = st.tabs(["SKU 현황 · 상세", "일자별 판매 히트맵", "월별 매출 분석", "발주 요청 리스트"])
+t_status, t_heat, t_month = st.tabs(["SKU 현황 · 발주서", "일자별 판매 히트맵", "월별 매출 분석"])
 
 # ------------------------------------------------------------ SKU 현황
 with t_status:
-    show = pd.DataFrame({
-        "신호": sku["신호"], "브랜드": sku["브랜드"], "품목": sku["품목"], "현재재고": sku["현재재고"], "전일판매": sku["전일판매"].astype(int),
-        "7일판매": sku["7일판매"], "30일판매": sku["30일판매"], "7일평균": sku["7일평균"].round(2),
+    base = pd.DataFrame({
+        "신호": sku["신호"], "브랜드": sku["브랜드"], "품목": sku["품목"], "현재재고": sku["현재재고"],
+        "전일판매": sku["전일판매"].astype(int), "7일판매": sku["7일판매"], "30일판매": sku["30일판매"],
+        "7일평균": sku["7일평균"].round(2),
         "소진예상일": sku["소진예상일"].apply(lambda v: "판매없음" if v is None or pd.isna(v) else f"{v:.1f}일"),
-        "발주권장": sku["발주권장"], "품절": [("품절" if s else ("당일 품절→입고됨" if r else "")) for s, r in zip(sku["품절"], sku["당일품절후입고"])],
+        "발주권장": sku["발주권장"],
+        "발주": False, "발주수량": 0, "기발주량": 0,
+        "품절": [("품절" if s_ else ("당일 품절→입고됨" if r_ else "")) for s_, r_ in zip(sku["품절"], sku["당일품절후입고"])],
         "재고금액": sku["재고금액"].apply(ui.won),
     })
     st.caption("🔴 위험 · 🟡 주의 · 🟢 양호 — 기준: 재고소진 예상일 "
                f"{cfg['stock_red_days']}일 이하=🔴, {cfg['stock_yellow_days']}일 이하=🟡 (설정에서 변경). "
-               "행을 클릭하면 아래에 SKU 상세가 표시됩니다.")
-    ev = st.dataframe(show, hide_index=True, width="stretch", on_select="rerun",
-                      selection_mode="single-row", column_config={
-                          "7일평균": st.column_config.NumberColumn(help="최근 7일 출고합 ÷ 7 (데이터 없는 날은 0)"),
-                          "소진예상일": st.column_config.TextColumn(help="현재재고 ÷ 7일 평균 판매량"),
-                          "발주권장": st.column_config.NumberColumn(
-                              help=f"max(0, 7일평균 × 목표재고일수({cfg['target_stock_days']}일) − 현재재고)"),
-                          "재고금액": st.column_config.TextColumn(help="현재재고 × 원가(상품 마스터)")})
-    sel = ev.selection.rows
-    pick = sku.iloc[sel[0]] if sel else sku.iloc[0]
+               "**발주할 상품은 '발주' 칸을 체크하고 '발주수량'을 입력**하세요. 아래에서 발주서를 만들 수 있습니다.")
+    EDITABLE = ("발주", "발주수량", "기발주량")
+    edited = st.data_editor(
+        base, hide_index=True, width="stretch", key=f"po_editor_{asof_s}_{d.get('brand_sel', '전체')}",
+        disabled=[c for c in base.columns if c not in EDITABLE],
+        column_config={
+            "7일평균": st.column_config.NumberColumn(help="최근 7일 출고합 ÷ 7 (데이터 없는 날은 0)"),
+            "소진예상일": st.column_config.TextColumn(help="현재재고 ÷ 7일 평균 판매량"),
+            "발주권장": st.column_config.NumberColumn(
+                help=f"max(0, 7일평균 × 목표재고일수({cfg['target_stock_days']}일) − 현재재고). 참고용이며 발주서에는 입력한 발주수량이 들어갑니다."),
+            "발주": st.column_config.CheckboxColumn("발주", help="체크한 상품만 발주서에 들어갑니다"),
+            "발주수량": st.column_config.NumberColumn("발주수량", min_value=0, step=1, format="%d", help="발주서의 '발주 요청량'"),
+            "기발주량": st.column_config.NumberColumn("기발주량", min_value=0, step=1, format="%d",
+                                                  help="이미 발주해 둔 수량(오늘 ~ 차주 토요일까지). 없으면 0"),
+            "재고금액": st.column_config.TextColumn(help="현재재고 × 원가(상품 마스터)")})
+
+    # ---- 발주서 만들기 (사용자가 매번 만들던 '매뉴얼 발주요청' 엑셀과 같은 서식)
+    st.subheader("📝 발주서 만들기")
+    qty_in = pd.to_numeric(edited["발주수량"], errors="coerce").fillna(0).astype(int)
+    prior_in = pd.to_numeric(edited["기발주량"], errors="coerce").fillna(0).astype(int)
+    checked = edited["발주"].fillna(False).astype(bool)
+    ok_idx = edited.index[checked & (qty_in > 0)]
+    zero_checked = edited.loc[checked & (qty_in <= 0), "품목"].tolist()
+    unchecked_qty = edited.loc[~checked & (qty_in > 0), "품목"].tolist()
+    if zero_checked:
+        st.warning("체크했지만 발주수량이 0이라 빠졌습니다: " + ", ".join(zero_checked))
+    if unchecked_qty:
+        st.info("발주수량은 적었지만 '발주'가 체크되지 않아 빠졌습니다: " + ", ".join(unchecked_qty))
+    vid, vname = cfg.get("po_vendor_id", ""), cfg.get("po_vendor_name", "")
+    if not (vid and vname):
+        st.warning("발주서에 들어갈 **VENDOR ID / VENDOR NAME** 이 아직 없습니다. 한 번만 입력해 두면 계속 쓰입니다.")
+        if ui.is_admin():
+            with st.form("po_vendor_form"):
+                f1, f2 = st.columns(2)
+                nv1 = f1.text_input("VENDOR ID", vid)
+                nv2 = f2.text_input("VENDOR NAME", vname)
+                if st.form_submit_button("💾 저장", type="primary"):
+                    config.save_settings({**cfg, "po_vendor_id": nv1.strip(), "po_vendor_name": nv2.strip()})
+                    st.rerun()
+        else:
+            st.info("왼쪽 메뉴의 '관리자 로그인' 후 이 칸이 나타납니다. (또는 파일 업로드·설정 → 기준값 탭)")
+    elif len(ok_idx) == 0:
+        st.info("위 표에서 발주할 상품의 '발주'를 체크하고 '발주수량'을 입력하면 발주서를 내려받을 수 있습니다.")
+    else:
+        centers = db.read_sales_center()
+        center_opts = sorted(centers["center"].dropna().unique()) if len(centers) else ["VF107"]
+        c1, c2 = st.columns([1, 1])
+        center = c1.selectbox("납품센터", center_opts, index=center_opts.index("VF107") if "VF107" in center_opts else 0)
+        extra = c2.checkbox("추가 발주 (파일명 끝에 _추가)", value=False)
+        rows, preview = [], []
+        for i in ok_idx:
+            r_ = sku.loc[i]
+            nm = r_["sku_name"] or r_["품목"]
+            rows.append({"sku_id": r_["sku_id"], "name": nm, "qty": int(qty_in[i]), "prior": int(prior_in[i]),
+                         "stock": int(r_["현재재고"]), "avg7": float(r_["7일평균"])})
+            tot = int(qty_in[i]) + int(prior_in[i]) + int(r_["현재재고"])
+            preview.append({"SKU ID": r_["sku_id"], "스큐 이름": nm, "발주 요청량": int(qty_in[i]), "기발주량": int(prior_in[i]),
+                            "쿠팡 현재고": int(r_["현재재고"]), "일평균판매량": round(float(r_["7일평균"]), 1),
+                            "재고일수": (round(tot / r_["7일평균"], 1) if r_["7일평균"] > 0 else None), "납품센터": center})
+        st.dataframe(pd.DataFrame(preview), hide_index=True, width="stretch")
+        fname = po_filename(vname, center, date.today(), extra)
+        st.download_button(f"⬇️ 발주서 다운로드 ({len(rows)}건)", build_po_xlsx(rows, vid, vname, center), file_name=fname,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.caption(f"파일명: {fname} · 재고일수 = (발주 요청량 + 기발주량 + 현재고) ÷ 일평균판매량, 납품일자 = 내일 (엑셀 수식). "
+                   "두 브랜드를 한 파일에 담으려면 왼쪽 메뉴 브랜드를 '전체'로 두세요.")
+
+    # ---- SKU 상세
+    pick_name = st.selectbox("🔎 상세를 볼 상품", list(sku["품목"]), index=0)
+    pick = sku[sku["품목"] == pick_name].iloc[0]
     st.subheader(f"🔎 {pick['품목']} 상세")
     s = daily[daily["sku_id"] == pick["sku_id"]].copy()
     if s.empty:
@@ -138,20 +201,3 @@ with t_month:
                                 "소비자가매출": st.column_config.TextColumn(help="판매량 × (판매가−할인). 광고 전환매출과 같은 기준"),
                                 "전월대비": st.column_config.TextColumn(help="판매수량 기준. 데이터일수가 적은 달은 비교에 주의")})
     st.caption("※ 데이터 일수가 달 일수보다 적으면 전월 대비가 왜곡될 수 있습니다.")
-
-# ------------------------------------------------------------ 발주 요청
-with t_order:
-    need = op[op["발주권장"] > 0].sort_values("소진예상일")
-    if need.empty:
-        st.success("현재 발주가 필요한 SKU가 없습니다.")
-    else:
-        lst = pd.DataFrame({
-            "SKU ID": need["sku_id"], "품목": need["품목"], "SKU 명": need["sku_name"], "현재재고": need["현재재고"],
-            "7일평균 판매": need["7일평균"].round(2),
-            "소진예상(일)": need["소진예상일"].apply(lambda v: None if pd.isna(v) else round(v, 1)),
-            "발주 권장수량": need["발주권장"]})
-        st.dataframe(lst, hide_index=True, width="stretch")
-        st.download_button("⬇️ 발주 요청 리스트 엑셀 다운로드", to_excel_bytes({"발주요청": lst}),
-                           file_name=f"발주요청_{asof_s}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption(f"발주 권장수량 = max(0, 7일평균 × 목표재고일수 {cfg['target_stock_days']}일 − 현재재고), 올림")

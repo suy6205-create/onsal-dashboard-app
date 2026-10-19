@@ -242,6 +242,9 @@ with t_cfg:
                                                  help="윙 광고는 마진 정보가 없어 손익분기 대신 이 값을 기준선으로 씁니다")
     new["default_breakeven_roas"] = c[2].number_input("임시 손익분기 ROAS(배)", 0.5, 20.0, float(cfg["default_breakeven_roas"]), step=0.1,
                                                        help="상품 마스터에 가격·원가가 없을 때만 사용")
+    c = st.columns(2)
+    new["po_vendor_id"] = c[0].text_input("발주서 VENDOR ID", cfg.get("po_vendor_id", ""), help="판매·재고 화면에서 만드는 발주서 C열에 들어갑니다")
+    new["po_vendor_name"] = c[1].text_input("발주서 VENDOR NAME", cfg.get("po_vendor_name", ""), help="발주서 D열, 파일명(업체 약칭)에 쓰입니다. 예: 오아 주식회사")
     kg = pd.DataFrame([{"그룹": k, "포함 단어(쉼표 구분)": ", ".join(v)} for k, v in (cfg.get("keyword_groups") or {}).items()])
     st.markdown("**키워드 상품군 규칙**")
     kge = st.data_editor(kg if len(kg) else pd.DataFrame({"그룹": [""], "포함 단어(쉼표 구분)": [""]}), num_rows="dynamic",

@@ -30,6 +30,7 @@ DEFAULTS = {
     "wing_exclude_min_cost": 1500, "wing_min_clicks": 10, "wing_bid_up_max_impressions": 1000,
     "trial_fee_per_unit": 0, "vat": 1.1, "default_breakeven_roas": 4.0,
     "keyword_groups": {},
+    "po_vendor_id": "", "po_vendor_name": "",   # 발주서의 VENDOR ID / NAME (저장소에 넣지 않고 DB 설정으로만 보관)
 }
 
 
