@@ -30,7 +30,7 @@ DEFAULTS = {
     "wing_exclude_min_cost": 1500, "wing_min_clicks": 10, "wing_bid_up_max_impressions": 1000,
     "trial_fee_per_unit": 0, "vat": 1.1, "default_breakeven_roas": 4.0,
     "keyword_groups": {},
-    "po_vendor_id": "", "po_vendor_name": "",   # 발주서의 VENDOR ID / NAME (저장소에 넣지 않고 DB 설정으로만 보관)
+    "po_vendor_id": "A00065399", "po_vendor_name": "오아 주식회사", "po_center": "VF107",   # 발주서 고정값 (기준값 탭에서 바꿀 수 있음)
 }
 
 
@@ -53,6 +53,9 @@ def brand_list(cfg: dict) -> list[str]:
 def load_settings() -> dict:
     cfg = dict(DEFAULTS)
     cfg.update(yaml.safe_load(_load_text("settings", SETTINGS_PATH)) or {})
+    for k in ("po_vendor_id", "po_vendor_name", "po_center"):   # 예전에 빈 값이 저장돼 있어도 고정값으로 채움
+        if not str(cfg.get(k) or "").strip():
+            cfg[k] = DEFAULTS[k]
     return cfg
 
 

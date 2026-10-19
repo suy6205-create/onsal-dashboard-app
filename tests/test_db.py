@@ -100,3 +100,15 @@ def test_upsert_replaces_only_brands_in_file(tmpdb):
     db.upsert_sales(c, d, "onsal_only.csv")
     got = db.read_sales_daily().set_index("sku_id")
     assert got.loc["1", "outbound"] == 9 and got.loc["2", "outbound"] == 2 and len(got) == 2
+
+
+def test_po_fixed_values_default_even_if_blank_saved(tmpdb):
+    cfg = config.load_settings()
+    assert (cfg["po_vendor_id"], cfg["po_vendor_name"], cfg["po_center"]) == ("A00065399", "오아 주식회사", "VF107")
+    cfg.update(po_vendor_id="", po_vendor_name="", po_center="")      # 예전에 빈 값이 저장된 DB
+    config.save_settings(cfg)
+    again = config.load_settings()
+    assert again["po_vendor_id"] == "A00065399" and again["po_center"] == "VF107"
+    cfg.update(po_vendor_id="B1")                                      # 직접 바꾼 값은 존중
+    config.save_settings(cfg)
+    assert config.load_settings()["po_vendor_id"] == "B1"

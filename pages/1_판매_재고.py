@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src import config, db
+from src import config
 from src import metrics as M
 from src import ui
 try:
@@ -81,27 +81,11 @@ with t_status:
         st.warning("체크했지만 발주수량이 0이라 빠졌습니다: " + ", ".join(zero_checked))
     if unchecked_qty:
         st.info("발주수량은 적었지만 '발주'가 체크되지 않아 빠졌습니다: " + ", ".join(unchecked_qty))
-    vid, vname = cfg.get("po_vendor_id", ""), cfg.get("po_vendor_name", "")
-    if not (vid and vname):
-        st.warning("발주서에 들어갈 **VENDOR ID / VENDOR NAME** 이 아직 없습니다. 한 번만 입력해 두면 계속 쓰입니다.")
-        if ui.is_admin():
-            with st.form("po_vendor_form"):
-                f1, f2 = st.columns(2)
-                nv1 = f1.text_input("VENDOR ID", vid)
-                nv2 = f2.text_input("VENDOR NAME", vname)
-                if st.form_submit_button("💾 저장", type="primary"):
-                    config.save_settings({**cfg, "po_vendor_id": nv1.strip(), "po_vendor_name": nv2.strip()})
-                    st.rerun()
-        else:
-            st.info("왼쪽 메뉴의 '관리자 로그인' 후 이 칸이 나타납니다. (또는 파일 업로드·설정 → 기준값 탭)")
-    elif len(ok_idx) == 0:
+    vid, vname, center = cfg["po_vendor_id"], cfg["po_vendor_name"], cfg["po_center"]   # 고정값 (기준값 탭에서 변경 가능)
+    if len(ok_idx) == 0:
         st.info("위 표에서 발주할 상품의 '발주'를 체크하고 '발주수량'을 입력하면 발주서를 내려받을 수 있습니다.")
     else:
-        centers = db.read_sales_center()
-        center_opts = sorted(centers["center"].dropna().unique()) if len(centers) else ["VF107"]
-        c1, c2 = st.columns([1, 1])
-        center = c1.selectbox("납품센터", center_opts, index=center_opts.index("VF107") if "VF107" in center_opts else 0)
-        extra = c2.checkbox("추가 발주 (파일명 끝에 _추가)", value=False)
+        extra = st.checkbox("추가 발주 (파일명 끝에 _추가)", value=False)
         rows, preview = [], []
         for i in ok_idx:
             r_ = sku.loc[i]
