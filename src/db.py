@@ -148,10 +148,10 @@ def conn():
         _CACHE.clear()
 
 
-# 화면을 누를 때마다 DB 에서 같은 데이터를 다시 받지 않도록 읽기 결과를 잠깐(5분) 보관한다.
+# 화면을 누를 때마다 DB 에서 같은 데이터를 다시 받지 않도록 읽기 결과를 (30분) 보관한다.
 # (무료 DB 는 데이터 전송량·가동 시간 한도가 있어 반복 조회가 한도를 빨리 소진시킨다)
 _CACHE: dict = {}
-CACHE_TTL = 300
+CACHE_TTL = 1800
 
 
 def _read(sql: str, params: dict | None = None) -> pd.DataFrame:
