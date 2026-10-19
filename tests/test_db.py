@@ -112,3 +112,23 @@ def test_po_fixed_values_default_even_if_blank_saved(tmpdb):
     cfg.update(po_vendor_id="B1")                                      # 직접 바꾼 값은 존중
     config.save_settings(cfg)
     assert config.load_settings()["po_vendor_id"] == "B1"
+
+
+def test_retrying_recovers_from_transient_failures():
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("connection timeout")
+        return "ok"
+    slept = []
+    assert db.retrying(flaky, tries=4, base_delay=1.0, sleep=slept.append) == "ok"
+    assert calls["n"] == 3 and slept == [1.0, 2.0]
+
+
+def test_retrying_gives_up_with_last_error():
+    def always():
+        raise RuntimeError("down")
+    with pytest.raises(RuntimeError, match="down"):
+        db.retrying(always, tries=2, base_delay=0, sleep=lambda s: None)

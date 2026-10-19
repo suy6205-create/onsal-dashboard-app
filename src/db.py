@@ -7,12 +7,13 @@ SQL 은 SQLite/Postgres 양쪽에서 동작하는 표준 문법만 쓴다.
 from __future__ import annotations
 
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import bindparam, create_engine, inspect, text
+from sqlalchemy import bindparam, create_engine, event, inspect, text
 
 from .loaders import AD_NUM_COLS, AD_TEXT_COLS, DAILY_COLS
 
@@ -52,11 +53,31 @@ def is_remote() -> bool:
     return not get_url().startswith("sqlite")
 
 
+def retrying(fn, tries: int = 4, base_delay: float = 1.5, sleep=time.sleep):
+    """일시적 연결 실패(무료 DB 가 잠들었다 깨어나는 순간 등)에 대비해 몇 번 다시 시도한다."""
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if i < tries - 1:
+                sleep(base_delay * (i + 1))
+    raise last
+
+
 def engine():
     global _engine
     if _engine is None:
-        _engine = create_engine(get_url(), pool_pre_ping=True, pool_recycle=300, future=True)
-        _create_schema(_engine)
+        url = get_url()
+        kwargs = {"connect_args": {"connect_timeout": 15}} if not url.startswith("sqlite") else {}
+        eng = create_engine(url, pool_pre_ping=True, pool_recycle=300, future=True, **kwargs)
+        if not url.startswith("sqlite"):
+            @event.listens_for(eng, "do_connect")
+            def _connect_with_retry(dialect, conn_rec, cargs, cparams):   # noqa: ANN001
+                return retrying(lambda: dialect.loaded_dbapi.connect(*cargs, **cparams))
+        _create_schema(eng)      # 연결 단계에서 이미 재시도하므로 여기서는 한 번만
+        _engine = eng          # 스키마 준비까지 성공했을 때만 보관 (실패하면 다음 접속에서 다시 시도)
     return _engine
 
 
