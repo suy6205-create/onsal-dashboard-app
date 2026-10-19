@@ -87,6 +87,7 @@ def reset_engine() -> None:
     if _engine is not None:
         _engine.dispose()
     _engine = None
+    _CACHE.clear()
 
 
 def _ddl(dialect: str) -> list[str]:
@@ -139,14 +140,29 @@ def init_db() -> None:
 
 @contextmanager
 def conn():
-    """트랜잭션 연결 (정상 종료 시 commit, 예외 시 rollback)."""
-    with engine().begin() as c:
-        yield c
+    """트랜잭션 연결 (정상 종료 시 commit, 예외 시 rollback). 쓰기가 끝나면 읽기 캐시를 비운다."""
+    try:
+        with engine().begin() as c:
+            yield c
+    finally:
+        _CACHE.clear()
+
+
+# 화면을 누를 때마다 DB 에서 같은 데이터를 다시 받지 않도록 읽기 결과를 잠깐(5분) 보관한다.
+# (무료 DB 는 데이터 전송량·가동 시간 한도가 있어 반복 조회가 한도를 빨리 소진시킨다)
+_CACHE: dict = {}
+CACHE_TTL = 300
 
 
 def _read(sql: str, params: dict | None = None) -> pd.DataFrame:
+    key = (get_url(), sql, tuple(sorted((params or {}).items())))
+    hit = _CACHE.get(key)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1].copy()
     with engine().connect() as c:
-        return pd.read_sql(text(sql), c, params=params)
+        df = pd.read_sql(text(sql), c, params=params)
+    _CACHE[key] = (time.time(), df)
+    return df.copy()
 
 
 def _chunked_insert(df: pd.DataFrame, table: str, c) -> None:

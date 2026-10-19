@@ -140,7 +140,7 @@ def setup(title: str, icon: str = "📊") -> dict:
     except Exception as e:  # noqa: BLE001  (서버는 오류 내용을 가리므로 직접 안내)
         st.title(f"{icon} {title}")
         st.error("데이터베이스에 연결하지 못했습니다. 무료 DB 가 잠들었다 깨어나는 중이면 잠시 후 다시 열립니다.")
-        st.caption(f"원인: {type(e).__name__}: {str(e).strip().splitlines()[0][:200] if str(e).strip() else ''}")
+        st.caption(f"원인: {type(e).__name__}: {str(e).strip().splitlines()[0][:600] if str(e).strip() else ''}")
         if st.button("🔄 다시 시도", type="primary"):
             st.rerun()
         st.stop()

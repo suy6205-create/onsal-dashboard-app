@@ -132,3 +132,17 @@ def test_retrying_gives_up_with_last_error():
         raise RuntimeError("down")
     with pytest.raises(RuntimeError, match="down"):
         db.retrying(always, tries=2, base_delay=0, sleep=lambda s: None)
+
+
+def test_read_cache_hits_until_a_write_clears_it(tmpdb):
+    from sqlalchemy import text
+    db.add_trial("2026-09-15", "1", 1, 1.0, 0.0, "")
+    assert len(db.read_trials()) == 1
+    with db.engine().begin() as c:           # 캐시를 거치지 않는 직접 쓰기 -> 캐시가 살아 있으면 아직 안 보임
+        c.execute(text("INSERT INTO trials(date,sku_id,qty,unit_price,agency_fee,memo) VALUES ('2026-09-16','2',1,1,0,'')"))
+    assert len(db.read_trials()) == 1        # 5분 캐시
+    db.add_trial("2026-09-17", "3", 1, 1.0, 0.0, "")   # 정상 쓰기 -> 캐시 비움
+    assert len(db.read_trials()) == 3
+    got = db.read_trials()
+    got["qty"] = 99                          # 화면 코드가 DataFrame 을 고쳐도 캐시는 오염되지 않는다
+    assert db.read_trials()["qty"].tolist() == [1, 1, 1]
