@@ -5,7 +5,7 @@ from datetime import date
 import openpyxl
 import pytest
 
-from src.export import PO_HEADERS, build_po_xlsx, po_filename
+from src.purchase_order import PO_HEADERS, build_po_xlsx, po_filename
 
 ROWS = [
     {"sku_id": "1000001", "name": "테스트 세럼 30ml 1개", "qty": 20, "prior": 0, "stock": 2, "avg7": 0.286},

@@ -8,7 +8,12 @@ import streamlit as st
 from src import config, db
 from src import metrics as M
 from src import ui
-from src.export import build_po_xlsx, po_filename
+try:
+    from src.purchase_order import build_po_xlsx, po_filename
+    PO_IMPORT_ERROR = None
+except Exception as _e:   # noqa: BLE001  (서버가 오류 내용을 가리므로 화면에 직접 보여준다)
+    build_po_xlsx = po_filename = None
+    PO_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
 cfg = ui.setup("판매·재고", "📦")
 d = ui.load_all(cfg)
@@ -63,6 +68,9 @@ with t_status:
 
     # ---- 발주서 만들기 (사용자가 매번 만들던 '매뉴얼 발주요청' 엑셀과 같은 서식)
     st.subheader("📝 발주서 만들기")
+    if PO_IMPORT_ERROR:
+        st.error(f"발주서 기능을 불러오지 못했습니다 → {PO_IMPORT_ERROR}")
+        st.stop()
     qty_in = pd.to_numeric(edited["발주수량"], errors="coerce").fillna(0).astype(int)
     prior_in = pd.to_numeric(edited["기발주량"], errors="coerce").fillna(0).astype(int)
     checked = edited["발주"].fillna(False).astype(bool)
