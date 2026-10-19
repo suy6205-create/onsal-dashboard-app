@@ -147,9 +147,12 @@ with t_heat:
     pv = sub.pivot_table(index="품목", columns="date", values="outbound", aggfunc="sum")
     pv = pv.reindex(columns=days.strftime("%Y-%m-%d"))
     z = pv.values
+    # 0 은 옅은 회색, 1 이상은 눈에 띄는 파랑으로 (적게 팔린 날도 구분되게)
+    scale = [[0.0, "#EDF0F4"], [0.0001, "#BBD7F1"], [0.35, "#5FA2D6"], [0.7, "#2166AC"], [1.0, "#08306B"]]
     fig = go.Figure(go.Heatmap(
-        z=z, x=[x[8:] for x in pv.columns], y=list(pv.index), colorscale="Blues", xgap=2, ygap=2,
+        z=z, x=[x[8:] for x in pv.columns], y=list(pv.index), colorscale=scale, zmin=0, xgap=3, ygap=3,
         text=[[("" if pd.isna(v) else f"{v:.0f}") for v in row] for row in z], texttemplate="%{text}",
+        textfont=dict(size=17, family="Arial Black, Arial, sans-serif"),
         hovertemplate="%{y}<br>" + mon + "-%{x}<br>출고 %{z:,}개<extra></extra>", colorbar=dict(title="출고")))
     if len(trials):
         for tr in trials[trials["date"].str.startswith(mon)].itertuples():
@@ -157,8 +160,13 @@ with t_heat:
                 xi, yi = int(tr.date[8:]) - 1, list(pv.index).index(names[tr.sku_id])
                 fig.add_shape(type="rect", x0=xi - .5, x1=xi + .5, y0=yi - .5, y1=yi + .5,
                               line=dict(color="#F58518", width=3))
-    fig.update_layout(xaxis=dict(title="일", dtick=1), yaxis=dict(autorange="reversed"))
-    ui.show(fig, max(220, 90 * len(pv) + 120))
+    wd_names = "월화수목금토일"
+    day_keys = [x[8:] for x in pv.columns]
+    day_text = [f"<b>{int(k)}</b><br><span style='font-size:11px'>{wd_names[dt.dayofweek]}</span>" for k, dt in zip(day_keys, days)]
+    fig.update_xaxes(side="top", tickmode="array", tickvals=day_keys, ticktext=day_text,
+                     tickfont=dict(size=14), title=dict(text="일", standoff=6), showgrid=False)
+    fig.update_yaxes(autorange="reversed", tickfont=dict(size=14), showgrid=False)
+    ui.show(fig, max(280, 84 * len(pv) + 170))
     st.caption("주황 테두리 = 체험단 진행일. 빈 칸 = 해당일 데이터 없음(판매 0으로 계산).")
 
 # ------------------------------------------------------------ 월별 매출
