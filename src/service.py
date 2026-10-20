@@ -66,6 +66,9 @@ def plan_ad_ingest(start: str, end: str, periods: pd.DataFrame) -> AdIngest:
 
 def ingest_ad(ad: pd.DataFrame, start: str, end: str, filename: str = "", brand="온살") -> AdIngest:
     """광고 저장(규칙 적용) + 매핑표 초안 자동 생성(기존 매핑은 보존)."""
+    if ad.empty:
+        return AdIngest("skipped", classify_ad_period(start, end),
+                        "이 파일에는 로켓배송(Retail) 광고 행이 없어 저장하지 않았습니다. (쿠팡윙 광고만 있는 기간일 수 있어요)")
     plan = plan_ad_ingest(start, end, db.ad_periods())
     if plan.status != "saved":
         return plan
@@ -78,3 +81,9 @@ def ingest_ad(ad: pd.DataFrame, start: str, end: str, filename: str = "", brand=
         config.save_map(pd.concat([existing, draft], ignore_index=True))
     plan.n_draft = len(draft)
     return plan
+
+
+def pending_price_skus() -> pd.DataFrame:
+    """판매가/원가가 비어 있는 SKU ('가격 미입력' 경고)."""
+    m = config.load_master()
+    return m[(m["판매가"] <= 0) | (m["원가"] <= 0)]

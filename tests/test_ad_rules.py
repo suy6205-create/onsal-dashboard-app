@@ -104,3 +104,15 @@ def test_ad_coverage_strip():
     cov = M.ad_coverage(t, today="2026-10-14", weeks=3).set_index("week")
     assert cov.loc["2026-10-05", "주 단위 파일"] == "✅" and cov.loc["2026-10-12", "일 단위 파일"] == 1
     assert cov.loc["2026-09-28", "주 단위 파일"] == "—"
+
+
+def test_ingest_ad_with_no_retail_rows_is_skipped_not_saved(tmpdb):
+    empty = _ad(2).iloc[0:0]
+    r = service.ingest_ad(empty, "2026-10-05", "2026-10-11", "wing_only.xlsx")
+    assert r.status == "skipped" and "Retail" in r.message
+    assert db.ad_periods().empty
+
+
+def test_pending_price_skus_exists_and_lists_unpriced(tmpdb):
+    assert hasattr(service, "pending_price_skus")
+    assert isinstance(service.pending_price_skus(), pd.DataFrame)
