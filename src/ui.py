@@ -204,13 +204,10 @@ def ad_filters(d: dict, cfg: dict, key: str) -> dict | None:
     if ad.empty:
         st.warning("저장된 광고 데이터가 없습니다. '📤 파일 업로드·설정' 에서 광고 XLSX(하루 또는 월~일 한 주)를 올려주세요.")
         return None
-    c1, c2 = st.columns([1.6, 1.2])
-    unit = c1.radio("보기 단위", ["주 단위", "일 단위"], horizontal=True, key=f"{key}_unit",
+    unit = st.radio("보기 단위", ["주 단위", "일 단위"], horizontal=True, key=f"{key}_unit",
                     help="주 단위=월~일 한 주 합계(진행 중인 주는 지금까지 올린 일 데이터 합), 일 단위=하루 단위 파일이 있는 날짜")
-    default_w = 14 if int(cfg["attribution_days"]) == 14 else 1
-    window = c2.radio("전환 기준", [14, 1], index=0 if default_w == 14 else 1, horizontal=True,
-                      format_func=lambda x: f"{x}일", key=f"{key}_w",
-                      help="광고 클릭 후 N일 안에 생긴 주문을 광고 성과로 인정합니다. 쿠팡 광고 리포트는 1일·14일 두 가지만 제공해요(7일 기준은 없음). 14일은 최근 주에는 아직 덜 쌓여 있을 수 있습니다.")
+    # 전환 기준은 설정의 기본값(기본 14일)으로 고정. 1일·14일 비교는 '주별 추이' 탭에서 나란히 볼 수 있다.
+    window = 14 if int(cfg["attribution_days"]) == 14 else 1
     p_all = M.prep_ad(ad, window, d["map"], d["master"], cfg["default_breakeven_roas"], supply_by_sku(d["daily"]))
     t = M.tag_ad_periods(p_all)
     n_legacy = len(set(zip(p_all["period_start"], p_all["period_end"]))) - len(set(zip(t["period_start"], t["period_end"])))
