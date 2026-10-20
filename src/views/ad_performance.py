@@ -167,44 +167,64 @@ def _weekly_trend(cfg: dict, d: dict) -> None:
     if ad.empty:
         st.info("저장된 광고 데이터가 없습니다.")
         return
-    w = st.radio("전환 기준", [14, 1], index=0 if int(cfg["attribution_days"]) == 14 else 1, horizontal=True,
-                 format_func=lambda x: f"{x}일", key="wt_w")
-    p = M.prep_ad(ad, w, d["map"], d["master"], cfg["default_breakeven_roas"], ui.supply_by_sku(d["daily"]))
-    wf = M.ad_weekly_frame(M.tag_ad_periods(p))
-    if wf.empty:
-        st.info("주 단위(월~일) 또는 일 단위 광고 파일이 아직 없습니다.")
-        return
-    g = M.ad_summary(wf, ["week"]).sort_values("week").reset_index(drop=True)
+    main_w = 14 if int(cfg["attribution_days"]) == 14 else 1
+    sup = ui.supply_by_sku(d["daily"])
+    parts = {}
+    for w in (1, 14):                                    # 두 기준을 모두 계산해 나란히 보여준다
+        p = M.prep_ad(ad, w, d["map"], d["master"], cfg["default_breakeven_roas"], sup)
+        wf = M.ad_weekly_frame(M.tag_ad_periods(p))
+        if wf.empty:
+            st.info("주 단위(월~일) 또는 일 단위 광고 파일이 아직 없습니다.")
+            return
+        parts[w] = (M.ad_summary(wf, ["week"]).sort_values("week").reset_index(drop=True), wf)
+    g, wf = parts[main_w]
+    other = parts[1 if main_w == 14 else 14][0].set_index("week")
     days = wf.groupby("week")["n_days"].max()
     g["일수"] = g["week"].map(days).astype(int)
     g["기간"] = [M.week_label(x) for x in g["week"]]
     g["비고"] = ["" if n >= 7 else f"진행 중 · 일 {n}/7" for n in g["일수"]]
     g["일평균 광고비"] = g["cost"] / g["일수"]
     g["일평균 전환매출"] = g["rev"] / g["일수"]
-    prev_cost, prev_roas = g["일평균 광고비"].shift(), g["roas"].shift()
-    g["전주 대비 광고비"] = [None if pd.isna(b) or b == 0 else (a - b) / b for a, b in zip(g["일평균 광고비"], prev_cost)]
-    g["전주 대비 ROAS"] = [None if pd.isna(b) or b == 0 else (a - b) / b for a, b in zip(g["roas"], prev_roas)]
+    today = pd.Timestamp.today().normalize()
+    final = [pd.Timestamp(x) + pd.Timedelta(days=6 + 14) for x in g["week"]]       # 일요일 + 14일 = 14일 전환이 모두 쌓이는 날
+    g["14일 전환 집계"] = ["완료" if f <= today else f"집계 중 ({f:%m/%d} 확정)" for f in final]
+    r1 = {x: (g.set_index("week") if main_w == 1 else other).at[x, "roas"] for x in g["week"]}
+    r14 = {x: (g.set_index("week") if main_w == 14 else other).at[x, "roas"] for x in g["week"]}
+    c1 = {x: (g.set_index("week") if main_w == 1 else other).at[x, "rev"] for x in g["week"]}
+    c14 = {x: (g.set_index("week") if main_w == 14 else other).at[x, "rev"] for x in g["week"]}
+    g["ROAS(1일)"] = [r1[x] for x in g["week"]]
+    g["ROAS(14일)"] = [r14[x] for x in g["week"]]
+    g["전환매출(1일)"] = [c1[x] for x in g["week"]]
+    g["전환매출(14일)"] = [c14[x] for x in g["week"]]
+
+    def _delta(series):
+        prev = series.shift()
+        return ["-" if pd.isna(b) or b == 0 else f"{(a - b) / b * 100:+.1f}%" for a, b in zip(series, prev)]
+    g["전주 대비 일평균 광고비"] = _delta(g["일평균 광고비"])
+    g[f"전주 대비 ROAS({main_w}일)"] = _delta(g["roas"])
     g["판정"] = ["-" if c <= 0 else ("✅ 양호" if r >= b else "⚠️ 기준 미달") for c, r, b in zip(g["cost"], g["roas"], g["be_roas"])]
     g["기준"] = g["be_roas"]
-    show = g[["기간", "일수", "cost", "일평균 광고비", "clicks", "orders", "rev", "cvr", "cpc", "roas", "기준", "판정",
-              "전주 대비 광고비", "전주 대비 ROAS", "비고"]].iloc[::-1]
-    st.caption("주(월~일)마다 한 번씩만 센 합계입니다. 진행 중인 주는 일수가 적으니 **일평균**과 전주 대비로 비교하세요.")
-    st.dataframe(show.rename(columns={"cost": "광고비", "clicks": "클릭", "orders": "주문", "rev": "전환매출", "cvr": "CVR",
-                                      "cpc": "CPC", "roas": "ROAS", "기준": "손익분기 ROAS"}),
-                 hide_index=True, width="stretch", column_config={
-                     "광고비": st.column_config.NumberColumn(format="₩%d"), "일평균 광고비": st.column_config.NumberColumn(format="₩%d"),
-                     "전환매출": st.column_config.NumberColumn(format="₩%d"), "CPC": st.column_config.NumberColumn(format="₩%d"),
-                     "CVR": st.column_config.NumberColumn(format="percent"), "ROAS": st.column_config.NumberColumn(format="percent"),
-                     "손익분기 ROAS": st.column_config.NumberColumn(format="percent"),
-                     "전주 대비 광고비": st.column_config.NumberColumn(format="percent"),
-                     "전주 대비 ROAS": st.column_config.NumberColumn(format="percent")})
+    st.caption("주(월~일)마다 한 번씩만 센 합계입니다. **쿠팡 광고 리포트는 전환 기준을 1일·14일 두 가지만 제공**해서 두 기준을 나란히 보여드립니다. "
+               "14일 전환은 클릭 후 14일까지 쌓이므로 '집계 중'인 최근 주는 숫자가 더 늘어납니다(1일 기준은 바로 확정). "
+               f"판정과 전주 대비는 기본 전환 기준({main_w}일)으로 계산합니다.")
+    cols = ["기간", "일수", "cost", "일평균 광고비", "clicks", "cpc", "orders", "전환매출(1일)", "ROAS(1일)", "전환매출(14일)", "ROAS(14일)",
+            "14일 전환 집계", "기준", "판정", "전주 대비 일평균 광고비", f"전주 대비 ROAS({main_w}일)", "비고"]
+    show = g[cols].iloc[::-1].rename(columns={"cost": "광고비", "clicks": "클릭", "cpc": "CPC", "orders": f"주문({main_w}일)", "기준": "손익분기 ROAS"})
+    st.dataframe(show, hide_index=True, width="stretch", column_config={
+        "광고비": st.column_config.NumberColumn(format="₩%d"), "일평균 광고비": st.column_config.NumberColumn(format="₩%d"),
+        "CPC": st.column_config.NumberColumn(format="₩%d"),
+        "전환매출(1일)": st.column_config.NumberColumn(format="₩%d"), "전환매출(14일)": st.column_config.NumberColumn(format="₩%d"),
+        "ROAS(1일)": st.column_config.NumberColumn(format="percent"), "ROAS(14일)": st.column_config.NumberColumn(format="percent"),
+        "손익분기 ROAS": st.column_config.NumberColumn(format="percent")})
     fig = go.Figure()
     fig.add_bar(x=g["기간"], y=g["일평균 광고비"], name="일평균 광고비", marker_color="#E45756",
                 hovertemplate="%{x}<br>일평균 광고비 ₩%{y:,.0f}<extra></extra>")
-    fig.add_bar(x=g["기간"], y=g["일평균 전환매출"], name="일평균 전환매출", marker_color="#4C78A8",
+    fig.add_bar(x=g["기간"], y=g["일평균 전환매출"], name=f"일평균 전환매출({main_w}일)", marker_color="#4C78A8",
                 hovertemplate="%{x}<br>일평균 전환매출 ₩%{y:,.0f}<extra></extra>")
-    fig.add_scatter(x=g["기간"], y=g["roas"] * 100, name="ROAS(%)", yaxis="y2", mode="lines+markers",
-                    line=dict(color="#54A24B"), hovertemplate="%{x}<br>ROAS %{y:.0f}%<extra></extra>")
+    fig.add_scatter(x=g["기간"], y=g["ROAS(14일)"] * 100, name="ROAS(14일)", yaxis="y2", mode="lines+markers",
+                    line=dict(color="#54A24B"), hovertemplate="%{x}<br>ROAS(14일) %{y:.0f}%<extra></extra>")
+    fig.add_scatter(x=g["기간"], y=g["ROAS(1일)"] * 100, name="ROAS(1일)", yaxis="y2", mode="lines+markers",
+                    line=dict(color="#F58518", dash="dot"), hovertemplate="%{x}<br>ROAS(1일) %{y:.0f}%<extra></extra>")
     fig.update_layout(barmode="group", yaxis=dict(title="일평균(₩)"),
                       yaxis2=dict(title="ROAS(%)", overlaying="y", side="right", showgrid=False))
     ui.show(fig, 380)

@@ -210,7 +210,7 @@ def ad_filters(d: dict, cfg: dict, key: str) -> dict | None:
     default_w = 14 if int(cfg["attribution_days"]) == 14 else 1
     window = c2.radio("전환 기준", [14, 1], index=0 if default_w == 14 else 1, horizontal=True,
                       format_func=lambda x: f"{x}일", key=f"{key}_w",
-                      help="광고 클릭/노출 후 N일 이내 발생한 주문을 광고 성과로 인정")
+                      help="광고 클릭 후 N일 안에 생긴 주문을 광고 성과로 인정합니다. 쿠팡 광고 리포트는 1일·14일 두 가지만 제공해요(7일 기준은 없음). 14일은 최근 주에는 아직 덜 쌓여 있을 수 있습니다.")
     p_all = M.prep_ad(ad, window, d["map"], d["master"], cfg["default_breakeven_roas"], supply_by_sku(d["daily"]))
     t = M.tag_ad_periods(p_all)
     n_legacy = len(set(zip(p_all["period_start"], p_all["period_end"]))) - len(set(zip(t["period_start"], t["period_end"])))
