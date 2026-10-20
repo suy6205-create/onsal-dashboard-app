@@ -17,6 +17,7 @@ ALIASES: dict[str, list[str]] = {
     "name": ["품목", "상품명", "sku명", "스큐이름", "스큐명", "품명", "제품", "제품명", "품목명"],
     "price": ["판매가", "판매가격", "소비자가", "쿠팡판매가", "판매가(vat포함)"],
     "supply": ["쿠팡공급가", "공급가", "쿠팡공급가(vat포함)", "공급가(vat포함)", "쿠팡공급가격", "입점공급가", "공급가(v+)", "공급가(v포함)", "쿠팡공급가(v+)"],
+    "cost": ["원가", "매입원가", "제조원가", "개당원가", "상품원가"],
     "shelf": ["유통기한", "유통기간", "소비기한"],
     "code": ["회사코드", "우리회사상품코드", "우리회사코드", "상품코드", "품목코드", "자사코드", "erp코드", "회사상품코드", "(회사)상품코드"],
 }
@@ -137,6 +138,44 @@ def match_by_name(product: str, names_by_sku: dict[str, list[str]]) -> tuple[str
     return None, ("ambiguous" if hits else "none")
 
 
+def _value_columns(sub: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """시트 행들에서 마스터에 넣을 값 열을 만든다: 판매가, 원가, 판매수수료율(공급가로 역산), 유통기한, 회사코드."""
+    idx = sub.index
+    out = pd.DataFrame(index=idx)
+    price = sub[mapping["price"]].map(_num) if "price" in mapping else pd.Series(None, index=idx, dtype=float)
+    out["판매가"] = price
+    out["원가"] = sub[mapping["cost"]].map(_num) if "cost" in mapping else None
+    if "supply" in mapping and "price" in mapping:
+        sup = sub[mapping["supply"]].map(_num)
+        out["판매수수료율"] = [None if (p is None or s is None or pd.isna(p) or pd.isna(s) or p <= 0) else round(1 - s / p, 4)
+                          for p, s in zip(price, sup)]
+    else:
+        out["판매수수료율"] = None
+    out["유통기한"] = sub[mapping["shelf"]].str.strip() if "shelf" in mapping else None
+    out["회사코드"] = sub[mapping["code"]].str.strip() if "code" in mapping else None
+    return out
+
+
+def sheet_products(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """시트의 모든 제품(SKU와 연결 여부와 무관)을 제품명 기준으로 정리한 표. 아직 판매 전인 제품을 나중에 자동 연결할 때 쓴다."""
+    name_col = mapping.get("name")
+    if not name_col:
+        return pd.DataFrame(columns=["시트제품명"] + FIELDS[1:])
+    sub = df[df[name_col].astype(str).str.strip() != ""]
+    out = pd.DataFrame({"시트제품명": sub[name_col].str.strip()})
+    out = pd.concat([out, _value_columns(sub, mapping)], axis=1)
+    return out.reset_index(drop=True)
+
+
+def match_snapshot(sku_name: str, snap: pd.DataFrame) -> dict | None:
+    """판매 데이터의 SKU 이름과 이름이 맞는 시트 제품 한 줄(딱 하나만 맞을 때). 없거나 여러 개면 None."""
+    if snap is None or snap.empty:
+        return None
+    q = norm_name(sku_name)
+    hits = [r for r in snap.to_dict("records") if norm_name(r["시트제품명"]) and (norm_name(r["시트제품명"]) in q or q in norm_name(r["시트제품명"]))]
+    return hits[0] if len(hits) == 1 else None
+
+
 def to_updates(df: pd.DataFrame, mapping: dict[str, str], names_by_sku: dict[str, list[str]] | None = None) -> pd.DataFrame:
     """시트 표 -> 마스터에 반영할 값. 열: SKU ID, 시트제품명, 품목, 판매가, 판매수수료율, 유통기한, 회사코드 (시트에 없는 칸은 None).
     SKU ID 열이 없으면 제품명을 판매 데이터의 SKU 이름(names_by_sku)과 맞춰 연결한다.
@@ -163,29 +202,20 @@ def to_updates(df: pd.DataFrame, mapping: dict[str, str], names_by_sku: dict[str
     out = pd.DataFrame({"SKU ID": sub["_sku"]})
     out["시트제품명"] = sub[name_col].str.strip() if name_col else ""
     out["품목"] = out["시트제품명"] if name_col else None
-    price = sub[mapping["price"]].map(_num) if "price" in mapping else pd.Series(None, index=sub.index, dtype=float)
-    out["판매가"] = price
-    if "supply" in mapping and "price" in mapping:
-        sup = sub[mapping["supply"]].map(_num)
-        out["판매수수료율"] = [None if (p is None or s is None or pd.isna(p) or pd.isna(s) or p <= 0) else round(1 - s / p, 4)
-                          for p, s in zip(price, sup)]
-    else:
-        out["판매수수료율"] = None
-    out["유통기한"] = sub[mapping["shelf"]].str.strip() if "shelf" in mapping else None
-    out["회사코드"] = sub[mapping["code"]].str.strip() if "code" in mapping else None
+    out = pd.concat([out, _value_columns(sub, mapping)], axis=1)
     res = out.drop_duplicates("SKU ID", keep="last").reset_index(drop=True)
     res.attrs["unmatched"] = unmatched
     return res
 
 
-FIELDS = ["품목", "판매가", "판매수수료율", "유통기한", "회사코드"]
-DEFAULT_FIELDS = ["판매가", "판매수수료율", "유통기한", "회사코드"]       # 품목명은 기본으로 덮어쓰지 않는다 (마스터의 짧은 이름 유지)
+FIELDS = ["품목", "판매가", "원가", "판매수수료율", "유통기한", "회사코드"]
+DEFAULT_FIELDS = ["판매가", "원가", "판매수수료율", "유통기한", "회사코드"]       # 품목명은 기본으로 덮어쓰지 않는다 (마스터의 짧은 이름 유지)
 
 
 def _show(f: str, v) -> str:
     """미리보기 표 표시용 문자열 (숫자·문자가 섞이지 않게)."""
     try:
-        if f == "판매가":
+        if f in ("판매가", "원가"):
             return f"{float(v):,.0f}원"
         if f == "판매수수료율":
             return f"{float(v) * 100:.2f}%"
@@ -208,7 +238,7 @@ def diff_with_master(updates: pd.DataFrame, master: pd.DataFrame, fields=None) -
             if new is None or (isinstance(new, float) and pd.isna(new)) or str(new).strip() == "":
                 continue
             old = cur[f]
-            same = (abs(float(old) - float(new)) < 1e-9) if f in ("판매가", "판매수수료율") and str(old) not in ("", "nan") \
+            same = (abs(float(old) - float(new)) < 1e-9) if f in ("판매가", "원가", "판매수수료율") and str(old) not in ("", "nan") \
                 else (str(old).strip() == str(new).strip())
             if not same:
                 rows.append({"SKU ID": sku, "품목": cur["품목"], "칸": f, "현재(마스터)": _show(f, old), "시트 값": _show(f, new)})
@@ -227,7 +257,7 @@ def apply_updates(master: pd.DataFrame, updates: pd.DataFrame, fields=None) -> t
             v = u.get(f)
             if v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == "":
                 continue
-            if f in ("판매가", "판매수수료율"):
+            if f in ("판매가", "원가", "판매수수료율"):
                 if abs(float(m.at[sku, f]) - float(v)) > 1e-9:
                     m.at[sku, f] = float(v)
                     n += 1

@@ -140,7 +140,7 @@ with t_sheet:
         except gsheet.SheetError as ex:
             st.error(str(ex))
             st.stop()
-        names = {"sku": "SKU ID", "name": "품목", "price": "판매가", "supply": "쿠팡 공급가", "shelf": "유통기한", "code": "회사 코드"}
+        names = {"sku": "SKU ID", "name": "품목", "price": "판매가", "supply": "쿠팡 공급가", "cost": "원가", "shelf": "유통기한", "code": "회사 코드"}
         st.success("읽은 열: " + " · ".join(f"{names[k]}→「{v}」" for k, v in mp.items()))
         lack = [names[k] for k in names if k not in mp and not (k == "sku" and "name" in mp)]
         if "sku" not in mp and "name" in mp:
@@ -163,10 +163,16 @@ with t_sheet:
         fields = gsheet.FIELDS if with_name else gsheet.DEFAULT_FIELDS
         diff = gsheet.diff_with_master(ups, full, fields)
         st.markdown(f"시트의 제품 중 **{len(ups)}개**가 우리 상품(SKU)과 연결됐고, 바뀌는 칸은 **{len(diff)}개**입니다.")
+        snap = gsheet.sheet_products(tbl, mp)           # 시트의 모든 제품 (판매 전 제품 포함)
         unm = ups.attrs.get("unmatched", [])
         if unm:
-            with st.expander(f"연결하지 못한 시트 제품 {len(unm)}개 (판매 데이터에 나오면 자동으로 연결됩니다)"):
-                st.dataframe(pd.DataFrame(unm, columns=["시트 제품명", "사유"]), hide_index=True, width="stretch")
+            with st.expander(f"아직 판매 데이터에 없는 시트 제품 {len(unm)}개 — 판매가 시작되면 아래 정보가 자동으로 채워집니다"):
+                det = snap[snap["시트제품명"].isin([n for n, _ in unm])].rename(columns={"판매수수료율": "수수료율"})
+                st.dataframe(det, hide_index=True, width="stretch", column_config={
+                    "판매가": st.column_config.NumberColumn(format="₩%d"), "원가": st.column_config.NumberColumn(format="₩%d"),
+                    "수수료율": st.column_config.NumberColumn(format="percent")})
+                st.caption("판매 CSV에 이 제품이 처음 나오는 날 상품 마스터에 자동 등록되면서, 시트의 판매가·원가·수수료율·유통기한·회사 코드가 함께 들어갑니다. "
+                           "(아래 '시트 정보 저장'을 눌러 두어야 합니다)")
         if "code" in mp:
             codes = tbl[mp["code"]].astype(str).str.strip()
             dup = sorted(set(codes[codes.duplicated(keep=False) & (codes != "")]))
@@ -174,13 +180,17 @@ with t_sheet:
                 st.warning("시트에서 같은 회사 코드가 여러 제품에 쓰였습니다: " + ", ".join(dup) + " — 오타일 수 있어요. 확인해 주세요.")
         if diff.empty:
             st.info("마스터와 시트의 값이 같습니다. 바뀔 내용이 없습니다.")
+            if ui.is_admin() and st.button("📌 시트 정보 저장 (판매 전 제품 자동 채우기용)"):
+                config.save_sheet_products(snap)
+                st.success(f"시트 제품 {len(snap)}개의 정보를 저장했습니다.")
         else:
             st.dataframe(diff, hide_index=True, width="stretch")
             if ui.is_admin():
                 if st.button("✅ 마스터에 반영", type="primary"):
                     new, n = gsheet.apply_updates(full, ups, fields)
                     config.save_master(new)
-                    st.success(f"{n}개 칸을 마스터에 반영했습니다.")
+                    config.save_sheet_products(snap)         # 판매 전 제품도 나중에 자동으로 채우도록 시트 정보를 함께 저장
+                    st.success(f"{n}개 칸을 마스터에 반영하고, 시트 제품 {len(snap)}개의 정보를 저장했습니다.")
                     st.rerun()
             else:
                 st.caption("🔐 반영하려면 왼쪽 메뉴 아래 **관리자 로그인**이 필요합니다. (미리보기는 로그인 없이 볼 수 있어요)")

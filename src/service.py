@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from . import config, db
+from . import config, db, gsheet
 from .loaders import ParsedSales, classify_ad_period, draft_ad_map
 
 
@@ -15,11 +15,21 @@ def add_new_skus_to_master(daily: pd.DataFrame) -> list[str]:
     known = set(master["SKU ID"])
     new = []
     rows = []
+    snap = config.load_sheet_products()          # 구글 시트에서 가져와 둔 제품 정보 (이름으로 연결)
     for sku, name, brand in daily[["sku_id", "sku_name", "brand"]].drop_duplicates("sku_id").itertuples(index=False):
         if sku not in known:
             new.append(sku)
-            rows.append({"SKU ID": sku, "품목": name, "판매가": 0, "할인": 0, "원가": 0,
-                         "판매수수료율": 0, "운영중": "Y", "광고명키워드": "", "브랜드": brand, "회사코드": "", "유통기한": ""})
+            row = {"SKU ID": sku, "품목": name, "판매가": 0, "할인": 0, "원가": 0,
+                   "판매수수료율": 0, "운영중": "Y", "광고명키워드": "", "브랜드": brand, "회사코드": "", "유통기한": ""}
+            hit = gsheet.match_snapshot(name, snap)
+            if hit:                                # 시트에 이미 정리된 제품이면 판매가·원가·수수료율·유통기한·코드를 바로 채운다
+                for f in ("판매가", "원가", "판매수수료율"):
+                    if hit.get(f) is not None and not pd.isna(hit[f]):
+                        row[f] = float(hit[f])
+                for f in ("유통기한", "회사코드"):
+                    if str(hit.get(f) or "").strip():
+                        row[f] = str(hit[f]).strip()
+            rows.append(row)
     if rows:
         config.save_master(pd.concat([master, pd.DataFrame(rows)], ignore_index=True))
     return new

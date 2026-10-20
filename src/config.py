@@ -85,6 +85,24 @@ def save_master(df: pd.DataFrame) -> None:
     db.kv_set("product_master", df[MASTER_COLS].to_csv(index=False))
 
 
+# ---------------------------------------------------------------- 구글 시트 제품 스냅샷 (판매 전 제품 자동 연결용)
+SHEET_COLS = ["시트제품명", "판매가", "원가", "판매수수료율", "유통기한", "회사코드"]
+
+
+def save_sheet_products(df: pd.DataFrame) -> None:
+    db.kv_set("sheet_products", df[SHEET_COLS].to_csv(index=False))
+
+
+def load_sheet_products() -> pd.DataFrame:
+    txt = db.kv_get("sheet_products") or ""
+    if not txt.strip():
+        return pd.DataFrame(columns=SHEET_COLS)
+    df = pd.read_csv(StringIO(txt), dtype=str, keep_default_na=False)
+    for c in ("판매가", "원가", "판매수수료율"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df[SHEET_COLS]
+
+
 # ---------------------------------------------------------------- ad map
 def load_map() -> pd.DataFrame:
     df = _csv(_load_text("ad_sku_map", MAP_PATH), {"광고옵션ID": str, "SKU ID": str})

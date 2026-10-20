@@ -94,10 +94,11 @@ NAMES = {"1001": ["테스트 하이퍼 비피다 세럼 30ml 1개", "비피다 �
 
 def test_sheet_without_sku_column_matches_by_product_name():
     df, mp = G.read_table(_raw(NAME_CSV))
-    assert set(mp) == {"name", "price", "supply", "shelf", "code"} and "sku" not in mp
+    assert set(mp) == {"name", "price", "supply", "cost", "shelf", "code"} and "sku" not in mp
     up = G.to_updates(df, mp, NAMES).set_index("SKU ID")
     assert list(up.index) == ["1001", "1002", "1003"]                     # 띄어쓰기가 달라도 연결
     assert up.loc["1001", "판매가"] == 9000 and up.loc["1001", "판매수수료율"] == pytest.approx(0.4)
+    assert up.loc["1001", "원가"] == 3000 and up.loc["1002", "원가"] == 3600          # 원가 열도 가져온다
     assert up.loc["1002", "유통기한"] == "X" and up.loc["1003", "유통기한"] == "" and up.loc["1001", "회사코드"] == "T0001"
     assert up.attrs["unmatched"] == [("테스트롤러", "판매 데이터에 없는 제품")]
 
@@ -109,3 +110,42 @@ def test_name_match_edge_cases():
     assert G.match_by_name("전혀다른제품", names) == (None, "none") and G.match_by_name("", names) == (None, "none")
     with pytest.raises(G.SheetError):
         G.to_updates(*G.read_table(_raw(NAME_CSV)))                             # SKU 열이 없는데 이름 목록도 없으면 오류
+
+
+@pytest.fixture()
+def tmpdb(tmp_path, monkeypatch):
+    from src import db
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 't.db').as_posix()}")
+    db.reset_engine()
+    yield
+    db.reset_engine()
+
+
+def test_cost_is_part_of_diff_and_apply():
+    df, mp = G.read_table(_raw(NAME_CSV))
+    up = G.to_updates(df, mp, NAMES)
+    m = _master().rename(columns={})
+    m["SKU ID"] = ["1001", "1002", "1003"]
+    m["품목"] = ["비피다", "로션", "시카"]
+    d = G.diff_with_master(up, m)
+    assert ("1001", "원가") in set(zip(d["SKU ID"], d["칸"]))
+    new, n = G.apply_updates(m, up)
+    assert new.set_index("SKU ID").loc["1001", "원가"] == 3000
+
+
+def test_sheet_products_snapshot_prefills_new_sku_on_first_sale(tmpdb):
+    """시트에 정리돼 있던 판매 전 제품이 처음 판매 데이터에 나오면, 가격·원가·유통기한·코드가 자동으로 채워진다."""
+    import pandas as pd
+    from src import config, service
+    df, mp = G.read_table(_raw(NAME_CSV))
+    snap = G.sheet_products(df, mp)
+    assert len(snap) == 4 and "테스트롤러" in set(snap["시트제품명"])          # 연결 못 한 제품도 스냅샷에는 들어 있다
+    config.save_sheet_products(snap)
+    daily = pd.DataFrame({"sku_id": ["7001"], "sku_name": ["테스트 롤러 0.25mm 5개"], "brand": ["온살"]})
+    assert service.add_new_skus_to_master(daily) == ["7001"]
+    row = config.load_master().set_index("SKU ID").loc["7001"]
+    assert (row["판매가"], row["원가"], row["회사코드"], row["유통기한"]) == (5900, 2800, "T0004", "2029-01-01")
+    assert row["판매수수료율"] == pytest.approx(1 - 3500 / 5900, abs=1e-4)
+    other = pd.DataFrame({"sku_id": ["7002"], "sku_name": ["시트에 없는 상품"], "brand": ["온살"]})
+    service.add_new_skus_to_master(other)
+    assert config.load_master().set_index("SKU ID").loc["7002", "판매가"] == 0       # 못 찾으면 예전처럼 가격 미입력
