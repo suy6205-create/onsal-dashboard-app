@@ -76,3 +76,36 @@ def test_item_name_is_not_overwritten_by_default_but_can_be():
     assert G.apply_updates(_master(), up, G.FIELDS)[0].set_index("SKU ID").loc["81649500", "품목"] == "비피다 세럼"
     d = G.diff_with_master(up, _master())
     assert all(isinstance(v, str) for v in d["현재(마스터)"]) and "원" in d.loc[d["칸"] == "판매가", "시트 값"].iloc[0]
+
+
+# 실제 시트와 같은 모양(SKU ID 열 없음, 제품명으로 구분, 머리글에 줄바꿈, 유통기한에 날짜/X/빈칸) — 값은 모두 가짜
+NAME_CSV = """,쿠팡 로켓,,,,,,,
+,제품,판매가,"공급가
+(V+)",원가,마진,마진율,유통기한,"(회사)
+상품코드"
+,테스트하이퍼비피다세럼,"9,000","  5,400 ","  3,000 ","  2,400 ",27%,2029-07-19,T0001
+,테스트올인원로션   ,"12,900","  7,740 ","  3,600 ","  4,140 ",32%,X,T0002
+,테스트시카세럼,"7,500","  4,500 ","  3,000 ","  1,500 ",20%,,T0002
+,테스트롤러,"5,900","  3,500 ","  2,800 ",700,12%,2029-01-01,T0004
+"""
+NAMES = {"1001": ["테스트 하이퍼 비피다 세럼 30ml 1개", "비피다 세럼"],
+         "1002": ["테스트 올인원 로션 150ml 1개"], "1003": ["테스트 시카 세럼 30ml"]}
+
+
+def test_sheet_without_sku_column_matches_by_product_name():
+    df, mp = G.read_table(_raw(NAME_CSV))
+    assert set(mp) == {"name", "price", "supply", "shelf", "code"} and "sku" not in mp
+    up = G.to_updates(df, mp, NAMES).set_index("SKU ID")
+    assert list(up.index) == ["1001", "1002", "1003"]                     # 띄어쓰기가 달라도 연결
+    assert up.loc["1001", "판매가"] == 9000 and up.loc["1001", "판매수수료율"] == pytest.approx(0.4)
+    assert up.loc["1002", "유통기한"] == "X" and up.loc["1003", "유통기한"] == "" and up.loc["1001", "회사코드"] == "T0001"
+    assert up.attrs["unmatched"] == [("테스트롤러", "판매 데이터에 없는 제품")]
+
+
+def test_name_match_edge_cases():
+    names = {"1": ["온살 나이아신 10 세럼"], "2": ["온살 나이아신 20 세럼"]}
+    assert G.match_by_name("온살나이아신10세럼", names) == ("1", "ok")        # 숫자가 다르면 다른 제품
+    assert G.match_by_name("온살나이아신", names) == (None, "ambiguous")        # 여러 개에 걸리면 연결하지 않음
+    assert G.match_by_name("전혀다른제품", names) == (None, "none") and G.match_by_name("", names) == (None, "none")
+    with pytest.raises(G.SheetError):
+        G.to_updates(*G.read_table(_raw(NAME_CSV)))                             # SKU 열이 없는데 이름 목록도 없으면 오류

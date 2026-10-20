@@ -4,7 +4,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from src import config, gsheet
+from src import config, db, gsheet
 from src import metrics as M
 from src import ui
 try:
@@ -142,19 +142,36 @@ with t_sheet:
             st.stop()
         names = {"sku": "SKU ID", "name": "품목", "price": "판매가", "supply": "쿠팡 공급가", "shelf": "유통기한", "code": "회사 코드"}
         st.success("읽은 열: " + " · ".join(f"{names[k]}→「{v}」" for k, v in mp.items()))
-        lack = [names[k] for k in names if k not in mp]
+        lack = [names[k] for k in names if k not in mp and not (k == "sku" and "name" in mp)]
+        if "sku" not in mp and "name" in mp:
+            st.caption("ℹ️ 시트에 SKU ID 열이 없어서 제품명을 판매 데이터의 SKU 이름과 맞춰 연결합니다 (띄어쓰기가 달라도 인식).")
         if lack:
             st.warning("시트에서 찾지 못한 열: " + ", ".join(lack) + " (있는 열만 반영합니다)")
-        ups = gsheet.to_updates(tbl, mp)
         full = config.load_master()
+        names_by_sku: dict = {}                          # 시트에 SKU ID 열이 없으면 판매 데이터의 SKU 이름과 제품명을 맞춘다
+        for r_ in db.read_sales_daily().sort_values("date").drop_duplicates("sku_id", keep="last").itertuples():
+            names_by_sku.setdefault(r_.sku_id, []).append(r_.sku_name)
+        for _, r_ in full.iterrows():
+            names_by_sku.setdefault(r_["SKU ID"], []).append(r_["품목"])
+        try:
+            ups = gsheet.to_updates(tbl, mp, names_by_sku)
+        except gsheet.SheetError as ex:
+            st.error(str(ex))
+            st.stop()
         with_name = st.checkbox("품목 이름도 시트 값으로 바꾸기", value=False, key="sheet_with_name",
                                 help="기본은 꺼짐: 마스터의 짧은 품목명을 그대로 둡니다")
         fields = gsheet.FIELDS if with_name else gsheet.DEFAULT_FIELDS
         diff = gsheet.diff_with_master(ups, full, fields)
-        not_in = [s_ for s_ in ups["SKU ID"] if s_ not in set(full["SKU ID"])]
-        st.markdown(f"시트의 SKU **{len(ups)}개** 중 마스터에 있는 상품은 **{len(ups) - len(not_in)}개**, 바뀌는 칸은 **{len(diff)}개**입니다.")
-        if not_in:
-            st.caption("마스터에 아직 없는 SKU(판매 데이터에 나오면 자동 등록됩니다): " + ", ".join(not_in[:15]) + (" …" if len(not_in) > 15 else ""))
+        st.markdown(f"시트의 제품 중 **{len(ups)}개**가 우리 상품(SKU)과 연결됐고, 바뀌는 칸은 **{len(diff)}개**입니다.")
+        unm = ups.attrs.get("unmatched", [])
+        if unm:
+            with st.expander(f"연결하지 못한 시트 제품 {len(unm)}개 (판매 데이터에 나오면 자동으로 연결됩니다)"):
+                st.dataframe(pd.DataFrame(unm, columns=["시트 제품명", "사유"]), hide_index=True, width="stretch")
+        if "code" in mp:
+            codes = tbl[mp["code"]].astype(str).str.strip()
+            dup = sorted(set(codes[codes.duplicated(keep=False) & (codes != "")]))
+            if dup:
+                st.warning("시트에서 같은 회사 코드가 여러 제품에 쓰였습니다: " + ", ".join(dup) + " — 오타일 수 있어요. 확인해 주세요.")
         if diff.empty:
             st.info("마스터와 시트의 값이 같습니다. 바뀔 내용이 없습니다.")
         else:

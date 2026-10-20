@@ -14,11 +14,11 @@ import pandas as pd
 
 ALIASES: dict[str, list[str]] = {
     "sku": ["skuid", "sku", "스큐id", "스큐아이디", "쿠팡sku", "쿠팡skuid", "상품번호", "옵션id"],
-    "name": ["품목", "상품명", "sku명", "스큐이름", "스큐명", "품명"],
+    "name": ["품목", "상품명", "sku명", "스큐이름", "스큐명", "품명", "제품", "제품명", "품목명"],
     "price": ["판매가", "판매가격", "소비자가", "쿠팡판매가", "판매가(vat포함)"],
-    "supply": ["쿠팡공급가", "공급가", "쿠팡공급가(vat포함)", "공급가(vat포함)", "쿠팡공급가격", "입점공급가"],
+    "supply": ["쿠팡공급가", "공급가", "쿠팡공급가(vat포함)", "공급가(vat포함)", "쿠팡공급가격", "입점공급가", "공급가(v+)", "공급가(v포함)", "쿠팡공급가(v+)"],
     "shelf": ["유통기한", "유통기간", "소비기한"],
-    "code": ["회사코드", "우리회사상품코드", "우리회사코드", "상품코드", "품목코드", "자사코드", "erp코드", "회사상품코드"],
+    "code": ["회사코드", "우리회사상품코드", "우리회사코드", "상품코드", "품목코드", "자사코드", "erp코드", "회사상품코드", "(회사)상품코드"],
 }
 _CACHE: dict = {}
 CACHE_TTL = 600
@@ -74,15 +74,17 @@ def clear_cache() -> None:
 
 
 def find_header(raw: pd.DataFrame, max_rows: int = 10) -> int:
-    """머리글 행 번호: 위쪽 몇 행 중 별칭과 가장 많이 맞는 행 (SKU 열이 있어야 함)."""
+    """머리글 행 번호: 위쪽 몇 행 중 별칭(SKU ID/제품명, 판매가, 공급가, 유통기한, 코드)과 가장 많이 맞는 행.
+    SKU ID 또는 제품(이름) 열이 있고 3개 이상 맞아야 한다."""
     best, best_n = -1, 0
     for i in range(min(max_rows, len(raw))):
         heads = {_norm(x) for x in raw.iloc[i]}
         n = sum(any(a in heads for a in al) for al in ALIASES.values())
-        if any(a in heads for a in ALIASES["sku"]) and n > best_n:
+        has_key = any(a in heads for a in ALIASES["sku"] + ALIASES["name"])
+        if has_key and n >= 3 and n > best_n:
             best, best_n = i, n
     if best < 0:
-        raise SheetError("시트에서 'SKU ID' 열이 있는 머리글 행을 찾지 못했습니다. 첫 줄에 SKU ID, 판매가, 쿠팡 공급가, 유통기한, 회사 코드 같은 제목을 적어 주세요.")
+        raise SheetError("시트에서 머리글 행을 찾지 못했습니다. 위쪽 줄에 '제품(또는 SKU ID)', 판매가, 공급가, 유통기한, 상품코드 같은 제목이 있어야 합니다.")
     return best
 
 
@@ -113,15 +115,55 @@ def _sku(v) -> str:
     return str(int(float(s))) if re.fullmatch(r"\d+(\.0+)?", s) else s
 
 
-def to_updates(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
-    """시트 표 -> 마스터에 반영할 값. 열: SKU ID, 품목, 판매가, 판매수수료율, 유통기한, 회사코드 (시트에 없는 칸은 None)."""
-    if "sku" not in mapping:
-        raise SheetError("시트에 SKU ID 열이 없습니다.")
-    out = pd.DataFrame({"SKU ID": df[mapping["sku"]].map(_sku)})
-    out = out[out["SKU ID"].str.fullmatch(r"\d+")].copy()
-    sub = df.loc[out.index]
-    out["품목"] = sub[mapping["name"]].str.strip() if "name" in mapping else None
-    price = sub[mapping["price"]].map(_num) if "price" in mapping else pd.Series(None, index=out.index, dtype=float)
+def norm_name(v) -> str:
+    """제품명 비교용: 공백·괄호·구분기호를 지우고 소문자로 (띄어쓰기가 달라도 같은 제품으로 본다)."""
+    return re.sub(r"[\s()\[\]·\-_/,]", "", str(v)).lower()
+
+
+def match_by_name(product: str, names_by_sku: dict[str, list[str]]) -> tuple[str | None, str]:
+    """시트의 제품명 -> (SKU ID, 상태). 한 제품만 포함 관계로 맞으면 연결, 여러 개면 'ambiguous', 없으면 'none'."""
+    p = norm_name(product)
+    if not p:
+        return None, "none"
+    hits = []
+    for sku, names in names_by_sku.items():
+        for nm in names:
+            q = norm_name(nm)
+            if q and (p in q or q in p):
+                hits.append(sku)
+                break
+    if len(hits) == 1:
+        return hits[0], "ok"
+    return None, ("ambiguous" if hits else "none")
+
+
+def to_updates(df: pd.DataFrame, mapping: dict[str, str], names_by_sku: dict[str, list[str]] | None = None) -> pd.DataFrame:
+    """시트 표 -> 마스터에 반영할 값. 열: SKU ID, 시트제품명, 품목, 판매가, 판매수수료율, 유통기한, 회사코드 (시트에 없는 칸은 None).
+    SKU ID 열이 없으면 제품명을 판매 데이터의 SKU 이름(names_by_sku)과 맞춰 연결한다.
+    연결하지 못한 제품은 결과의 attrs['unmatched'] 에 (제품명, 사유) 로 담는다."""
+    if "sku" not in mapping and "name" not in mapping:
+        raise SheetError("시트에 SKU ID 또는 제품(이름) 열이 없습니다.")
+    sub = df.copy()
+    name_col = mapping.get("name")
+    unmatched: list[tuple[str, str]] = []
+    if "sku" in mapping:
+        sub["_sku"] = sub[mapping["sku"]].map(_sku)
+        sub = sub[sub["_sku"].str.fullmatch(r"\d+")]
+    else:
+        if names_by_sku is None:
+            raise SheetError("시트에 SKU ID 열이 없어 제품명으로 연결해야 합니다.")
+        skus = []
+        for nm in sub[name_col]:
+            sku, st_ = match_by_name(nm, names_by_sku)
+            skus.append(sku or "")
+            if not sku and str(nm).strip():
+                unmatched.append((str(nm).strip(), "이름이 비슷한 SKU가 여러 개" if st_ == "ambiguous" else "판매 데이터에 없는 제품"))
+        sub["_sku"] = skus
+        sub = sub[sub["_sku"] != ""]
+    out = pd.DataFrame({"SKU ID": sub["_sku"]})
+    out["시트제품명"] = sub[name_col].str.strip() if name_col else ""
+    out["품목"] = out["시트제품명"] if name_col else None
+    price = sub[mapping["price"]].map(_num) if "price" in mapping else pd.Series(None, index=sub.index, dtype=float)
     out["판매가"] = price
     if "supply" in mapping and "price" in mapping:
         sup = sub[mapping["supply"]].map(_num)
@@ -131,7 +173,9 @@ def to_updates(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
         out["판매수수료율"] = None
     out["유통기한"] = sub[mapping["shelf"]].str.strip() if "shelf" in mapping else None
     out["회사코드"] = sub[mapping["code"]].str.strip() if "code" in mapping else None
-    return out.drop_duplicates("SKU ID", keep="last").reset_index(drop=True)
+    res = out.drop_duplicates("SKU ID", keep="last").reset_index(drop=True)
+    res.attrs["unmatched"] = unmatched
+    return res
 
 
 FIELDS = ["품목", "판매가", "판매수수료율", "유통기한", "회사코드"]
