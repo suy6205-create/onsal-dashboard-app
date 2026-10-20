@@ -44,7 +44,6 @@ master = d["master"]
 if master.empty:
     st.info("상품 마스터가 비어 있습니다. 판매 데이터를 올리면 SKU가 자동으로 등록됩니다.")
     st.stop()
-actual = ui.supply_by_sku(d["daily"])          # 판매 데이터의 매입원가 = 쿠팡이 실제 지급한 공급가(VAT 제외)
 rows = []
 for _, m in master.iterrows():
     fee = float(m["판매수수료율"]) if float(m["판매수수료율"]) > 0 else 0.40
@@ -62,14 +61,12 @@ def _calc(df: pd.DataFrame) -> pd.DataFrame:
     out["마진율(공급가 기준)"] = [x["마진율(공급가 기준)"] for x in res]
     out["마진율(판매가 기준)"] = [x["마진율(소비자가 기준)"] for x in res]
     out["손익분기 ROAS"] = [x["손익분기 ROAS"] for x in res]
-    out["실제 공급가(VAT 제외)"] = [actual.get(s) for s in out["SKU ID"]]
-    out["실제와 차이"] = [None if a is None or pd.isna(a) else n - a for a, n in zip(out["실제 공급가(VAT 제외)"], out["공급가(VAT 제외)"])]
     return out
 
 
 editable = ["판매가", "할인", "원가", "수수료율(%)"]
 st.caption("표의 **판매가·할인·원가·수수료율** 칸을 고치면 오른쪽 계산 결과가 바로 바뀝니다. "
-           "수수료율이 비어 있던 상품은 기본 40%로 보여줍니다. '실제 공급가'는 최근 판매 데이터의 매입원가입니다.")
+           "수수료율이 비어 있던 상품은 기본 40%로 보여줍니다.")
 ed = st.data_editor(
     _calc(base), hide_index=True, width="stretch", key="supply_editor",
     disabled=[c for c in _calc(base).columns if c not in editable],
@@ -84,15 +81,7 @@ ed = st.data_editor(
         "마진율(공급가 기준)": st.column_config.NumberColumn(format="percent"),
         "마진율(판매가 기준)": st.column_config.NumberColumn(format="percent"),
         "손익분기 ROAS": st.column_config.NumberColumn(format="percent", help="1 ÷ 마진율(판매가 기준)"),
-        "실제 공급가(VAT 제외)": st.column_config.NumberColumn(format="₩%d"),
-        "실제와 차이": st.column_config.NumberColumn(format="₩%d", help="계산한 공급가 − 쿠팡이 실제 지급한 공급가. 0이 아니면 수수료율을 확인하세요")})
-calc = _calc(ed[["SKU ID", "품목", "브랜드"] + editable])           # 편집 결과로 다시 계산한 값
-diff = calc[(calc["판매가"] > 0) & (calc["실제와 차이"].fillna(0).abs() > 1)]       # 가격을 아직 안 넣은 상품은 비교하지 않음
-if len(diff):
-    st.warning("계산한 공급가가 실제 쿠팡 공급가와 다른 상품이 있습니다: " + ", ".join(
-        f"{r['품목']} (계산 {int(r['공급가(VAT 제외)']):,} vs 실제 {int(r['실제 공급가(VAT 제외)']):,})" for _, r in diff.iterrows())
-        + " → 수수료율이 40%가 아닐 수 있어요.")
-
+    })
 if ui.is_admin():
     if st.button("💾 이 값을 상품 마스터에 저장", type="primary", help="판매가·할인·원가·수수료율을 마스터에 반영합니다 (다른 브랜드·다른 칸은 그대로)"):
         full = config.load_master().set_index("SKU ID")
