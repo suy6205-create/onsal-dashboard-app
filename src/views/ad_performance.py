@@ -1,4 +1,4 @@
-"""로켓/윙 공용 광고 성과 화면. render(code='Retail'|'3P', label, icon)"""
+"""광고 성과 화면 (로켓배송 광고, 일 단위 / 주 단위)."""
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -6,18 +6,18 @@ from src import metrics as M
 from src import ui
 
 
-def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
-    f = ui.ad_filters(d, cfg, f"adp_{code}", fixed_stype=label)
+def _detail(cfg: dict, d: dict) -> None:
+    f = ui.ad_filters(d, cfg, "adp")
     if f is None:
         return
-    p = ui.apply_extra_filters(f["df"], f"adp_{code}", keyword=True)
+    p = ui.apply_extra_filters(f["df"], "adp", keyword=True)
     w = f["window"]
     if p.empty:
         st.info("선택한 조건에 해당하는 광고 데이터가 없습니다.")
         return
 
     tot = M.ad_summary(p).iloc[0]
-    st.caption(f"{ui.period_label(f['start'], f['end'])} · {f['stype']} · 전환 {w}일 기준. "
+    st.caption(f"{f['label']} · 전환 {w}일 기준. "
                "비율 지표는 파일의 값이 아니라 원천 숫자(노출·클릭·광고비·주문·전환매출)로 다시 계산합니다.")
 
     # ---- 한 줄 요약
@@ -30,12 +30,8 @@ def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
             n = worst.index[0]
             lines.append(f"'{n}' 지면이 광고비의 {worst.loc[n, 'cost'] / pl['cost'].sum() * 100:.0f}%를 쓰지만 "
                          f"전환매출은 {worst.loc[n, 'rev'] / max(pl['rev'].sum(), 1) * 100:.0f}%뿐입니다")
-        if code == "Retail":
-            lines.append(f"{label} ROAS {ui.mult(tot['roas'])} — 손익분기 약 {ui.mult(tot['be_roas'])} "
-                         + ("이상으로 이익 구간" if tot["roas"] >= tot["be_roas"] else "에 못 미쳐 현재 적자 구조"))
-        else:
-            lines.append(f"{label} ROAS {ui.mult(tot['roas'])} — 목표 {ui.mult(cfg['wing_target_roas'])} "
-                         + ("이상으로 양호" if tot["roas"] >= cfg["wing_target_roas"] else "에 못 미쳐 점검 필요"))
+        lines.append(f"ROAS {ui.mult(tot['roas'])} — 손익분기 약 {ui.mult(tot['be_roas'])} "
+                     + ("이상으로 이익 구간" if tot["roas"] >= tot["be_roas"] else "에 못 미쳐 현재 적자 구조"))
     ui.headline(lines or ["광고비가 없는 데이터입니다."])
 
     # ---- KPI
@@ -60,7 +56,7 @@ def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
               "ctr": "CTR", "cpc": "CPC", "cvr": "CVR", "roas": "ROAS", "keyword": "키워드"}
 
     t_kw, t_pl, t_prod, t_halo, t_day = st.tabs(["키워드별 상세", "노출 지면별",
-                                                 "상품(옵션)별 · 묶음수량" if code == "Retail" else "상품(옵션)별",
+                                                 "상품(옵션)별 · 묶음수량",
                                                  "헤일로 전환", "일별 추이"])
 
     with t_kw:
@@ -95,9 +91,8 @@ def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
     with t_prod:
         pr = M.ad_summary(p, ["ad_product", "exec_sku", "exec_bundle"]).sort_values("cost", ascending=False)
         pcols = ["ad_product", "impressions", "clicks", "cost", "orders", "rev", "ctr", "cpc", "cvr", "roas"]
-        if code == "Retail":
-            pcols.insert(1, "exec_bundle")
-        REF = ui.ref_label(f["stype"])
+        pcols.insert(1, "exec_bundle")
+        REF = "손익분기 ROAS"
         pr[REF] = pr["be_roas"]
         st.dataframe(pr[pcols + [REF]]
                      .rename(columns={"ad_product": "광고집행 상품", "exec_bundle": "묶음", "impressions": "노출", "clicks": "클릭",
@@ -110,7 +105,7 @@ def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
                          REF: st.column_config.NumberColumn(format="percent")})
         bd = M.ad_summary(p, ["exec_sku", "exec_bundle"])
         bd = bd[bd["cost"] > 0]
-        if code == "Retail" and len(bd):
+        if len(bd):
             names = dict(zip(d["master"]["SKU ID"], d["master"]["품목"]))
             bd["품목"] = bd["exec_sku"].map(names).fillna("미매핑")
             fig = go.Figure()
@@ -122,7 +117,7 @@ def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
             fig.update_layout(barmode="group", title="묶음수량별 ROAS (어느 구성이 효율 좋은가)", yaxis_title="ROAS(%)")
             ui.show(fig, 340)
             st.caption("클릭·주문이 적은 구성은 우연에 크게 흔들립니다. 광고비·주문 수를 같이 보세요.")
-        if code == "Retail" and (p["exec_sku"] == "").any():
+        if (p["exec_sku"] == "").any():
             st.warning("SKU에 매핑되지 않은 광고 옵션이 있어 '미매핑'으로 표시됩니다. '⚙️ 데이터 업로드·설정' → 광고 매핑표에서 확정하세요.")
 
     with t_halo:
@@ -167,72 +162,42 @@ def _detail(code: str, label: str, cfg: dict, d: dict) -> None:
 
 
 # ------------------------------------------------------------------ 기간별 비교
-def _period_compare(code: str, label: str, cfg: dict, d: dict) -> None:
-    """저장된 광고 데이터를 기간 단위(파일 / 주별 / 월별)로 나란히 비교한다. 상세 분석의 기간 선택과는 별개."""
+def _weekly_trend(cfg: dict, d: dict) -> None:
     ad = d["ad"]
-    sub = ad[ad["sale_type"] == code] if len(ad) else ad
-    if sub.empty:
+    if ad.empty:
         st.info("저장된 광고 데이터가 없습니다.")
         return
-    st.caption("저장된 광고 데이터를 기간별로 나란히 봅니다. 기간이 다르면 합계 대신 **일평균**으로 비교하세요.")
-    c1, c2 = st.columns([3, 1.2])
-    unit = c1.radio("묶는 방식", ["저장된 기간 파일 (주간·월간 등)", "일자 데이터를 주별로", "일자 데이터를 월별로"],
-                    horizontal=True, key=f"pc_{code}_u")
-    w = c2.radio("전환 기준", [14, 1], index=0 if int(cfg["attribution_days"]) == 14 else 1, horizontal=True,
-                 format_func=lambda x: f"{x}일", key=f"pc_{code}_w")
-    p = M.prep_ad(sub, w, d["map"], d["master"], cfg["default_breakeven_roas"], ui.supply_by_sku(d["daily"]),
-                  cfg.get("wing_target_roas"))
-    note: dict = {}
-    if unit.startswith("저장된"):
-        f = p[p["period_start"] != p["period_end"]]
-        if f.empty:
-            st.info("주간·월간 같은 기간 파일이 없습니다. '일자 데이터를 주별/월별로' 를 선택해 보세요.")
-            return
-        g = M.ad_summary(f, ["period_start", "period_end"]).sort_values("period_start")
-        g["일수"] = [(pd.Timestamp(e) - pd.Timestamp(s0)).days + 1 for s0, e in zip(g["period_start"], g["period_end"])]
-        g["기간"] = [f"{ui.period_label(s0, e)} ({ui.period_kind(s0, e)})" for s0, e in zip(g["period_start"], g["period_end"])]
-        spans = list(zip(g["period_start"], g["period_end"]))
-        g["비고"] = ["" if (a, b) not in ui._drop_nested(spans)[1] else
-                   "다른 기간에 포함됨 (합산 주의)" for a, b in spans]
-    else:
-        dd = p[p["period_start"] == p["period_end"]].copy()
-        if dd.empty:
-            st.info("일자 광고 파일(시작일=종료일)이 아직 없습니다. 매일 광고 파일을 올리면 주별·월별로 묶어서 볼 수 있어요.")
-            return
-        dt = pd.to_datetime(dd["period_start"])
-        if "주별" in unit:
-            mon = dt - pd.to_timedelta(dt.dt.weekday, unit="D")
-            dd["_grp"] = mon.dt.strftime("%Y-%m-%d")
-        else:
-            dd["_grp"] = dt.dt.strftime("%Y-%m")
-        g = M.ad_summary(dd, ["_grp"]).sort_values("_grp")
-        days = dd.groupby("_grp")["period_start"].nunique()
-        g["일수"] = g["_grp"].map(days).astype(int)
-        full = 7 if "주별" in unit else None
-        labs, notes = [], []
-        for grp, n in zip(g["_grp"], g["일수"]):
-            if "주별" in unit:
-                m0 = pd.Timestamp(grp)
-                labs.append(f"{m0:%m/%d}~{m0 + pd.Timedelta(days=6):%m/%d}")
-                notes.append("" if n >= 7 else f"일자 데이터 {n}/7일")
-            else:
-                labs.append(grp)
-                dim = pd.Period(grp).days_in_month
-                notes.append("" if n >= dim else f"일자 데이터 {n}/{dim}일")
-        g["기간"], g["비고"] = labs, notes
+    w = st.radio("전환 기준", [14, 1], index=0 if int(cfg["attribution_days"]) == 14 else 1, horizontal=True,
+                 format_func=lambda x: f"{x}일", key="wt_w")
+    p = M.prep_ad(ad, w, d["map"], d["master"], cfg["default_breakeven_roas"], ui.supply_by_sku(d["daily"]))
+    wf = M.ad_weekly_frame(M.tag_ad_periods(p))
+    if wf.empty:
+        st.info("주 단위(월~일) 또는 일 단위 광고 파일이 아직 없습니다.")
+        return
+    g = M.ad_summary(wf, ["week"]).sort_values("week").reset_index(drop=True)
+    days = wf.groupby("week")["n_days"].max()
+    g["일수"] = g["week"].map(days).astype(int)
+    g["기간"] = [M.week_label(x) for x in g["week"]]
+    g["비고"] = ["" if n >= 7 else f"진행 중 · 일 {n}/7" for n in g["일수"]]
     g["일평균 광고비"] = g["cost"] / g["일수"]
     g["일평균 전환매출"] = g["rev"] / g["일수"]
+    prev_cost, prev_roas = g["일평균 광고비"].shift(), g["roas"].shift()
+    g["전주 대비 광고비"] = [None if pd.isna(b) or b == 0 else (a - b) / b for a, b in zip(g["일평균 광고비"], prev_cost)]
+    g["전주 대비 ROAS"] = [None if pd.isna(b) or b == 0 else (a - b) / b for a, b in zip(g["roas"], prev_roas)]
+    g["판정"] = ["-" if c <= 0 else ("✅ 양호" if r >= b else "⚠️ 기준 미달") for c, r, b in zip(g["cost"], g["roas"], g["be_roas"])]
     g["기준"] = g["be_roas"]
-    g["판정"] = ["✅ 양호" if (c > 0 and r >= b) else ("-" if c <= 0 else "⚠️ 기준 미달") for c, r, b in zip(g["cost"], g["roas"], g["be_roas"])]
-    ref = ui.ref_label(label)
-    show = g[["기간", "일수", "cost", "일평균 광고비", "clicks", "orders", "rev", "일평균 전환매출", "cvr", "cpc", "roas", "기준", "판정", "비고"]]
+    show = g[["기간", "일수", "cost", "일평균 광고비", "clicks", "orders", "rev", "cvr", "cpc", "roas", "기준", "판정",
+              "전주 대비 광고비", "전주 대비 ROAS", "비고"]].iloc[::-1]
+    st.caption("주(월~일)마다 한 번씩만 센 합계입니다. 진행 중인 주는 일수가 적으니 **일평균**과 전주 대비로 비교하세요.")
     st.dataframe(show.rename(columns={"cost": "광고비", "clicks": "클릭", "orders": "주문", "rev": "전환매출", "cvr": "CVR",
-                                      "cpc": "CPC", "roas": "ROAS", "기준": ref}),
+                                      "cpc": "CPC", "roas": "ROAS", "기준": "손익분기 ROAS"}),
                  hide_index=True, width="stretch", column_config={
                      "광고비": st.column_config.NumberColumn(format="₩%d"), "일평균 광고비": st.column_config.NumberColumn(format="₩%d"),
-                     "전환매출": st.column_config.NumberColumn(format="₩%d"), "일평균 전환매출": st.column_config.NumberColumn(format="₩%d"),
-                     "CPC": st.column_config.NumberColumn(format="₩%d"), "CVR": st.column_config.NumberColumn(format="percent"),
-                     "ROAS": st.column_config.NumberColumn(format="percent"), ref: st.column_config.NumberColumn(format="percent")})
+                     "전환매출": st.column_config.NumberColumn(format="₩%d"), "CPC": st.column_config.NumberColumn(format="₩%d"),
+                     "CVR": st.column_config.NumberColumn(format="percent"), "ROAS": st.column_config.NumberColumn(format="percent"),
+                     "손익분기 ROAS": st.column_config.NumberColumn(format="percent"),
+                     "전주 대비 광고비": st.column_config.NumberColumn(format="percent"),
+                     "전주 대비 ROAS": st.column_config.NumberColumn(format="percent")})
     fig = go.Figure()
     fig.add_bar(x=g["기간"], y=g["일평균 광고비"], name="일평균 광고비", marker_color="#E45756",
                 hovertemplate="%{x}<br>일평균 광고비 ₩%{y:,.0f}<extra></extra>")
@@ -243,16 +208,13 @@ def _period_compare(code: str, label: str, cfg: dict, d: dict) -> None:
     fig.update_layout(barmode="group", yaxis=dict(title="일평균(₩)"),
                       yaxis2=dict(title="ROAS(%)", overlaying="y", side="right", showgrid=False))
     ui.show(fig, 380)
-    st.caption("주간·월간 파일은 서로 겹칠 수 있으니(월간 안에 주간이 포함 등) 표의 합계를 더하지 마세요. "
-               "'일수'가 다른 기간끼리는 일평균으로 비교합니다. 기간 안에 일자 데이터가 일부만 있으면 비고에 표시됩니다.")
 
 
-def render(code: str, label: str, icon: str) -> None:
-    cfg = ui.setup(f"{label} 광고 성과", icon)
-    cfg = ui.type_cfg(cfg, code)
+def render() -> None:
+    cfg = ui.setup("광고 성과", "📢")
     d = ui.load_all(cfg)
-    t_detail, t_period = st.tabs(["📊 상세 분석", "🗓️ 기간별 비교"])
+    t_detail, t_period = st.tabs(["📊 상세 분석", "🗓️ 주별 추이"])
     with t_detail:
-        _detail(code, label, cfg, d)
+        _detail(cfg, d)
     with t_period:
-        _period_compare(code, label, cfg, d)
+        _weekly_trend(cfg, d)

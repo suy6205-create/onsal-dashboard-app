@@ -1,4 +1,4 @@
-"""로켓/윙 공용 키워드 분석 화면. render(code, label, icon)"""
+"""키워드 분석 화면 (로켓배송 광고, 일 단위 / 주 단위)."""
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -7,11 +7,10 @@ from src import metrics as M
 from src import ui
 
 
-def render(code: str, label: str, icon: str) -> None:
-    cfg = ui.setup(f"{label} 키워드 분석", icon)
-    cfg = ui.type_cfg(cfg, code)
+def render() -> None:
+    cfg = ui.setup("키워드 분석", "🔑")
     d = ui.load_all(cfg)
-    f = ui.ad_filters(d, cfg, f"kw_{code}", fixed_stype=label)
+    f = ui.ad_filters(d, cfg, "kw")
     if f is None:
         st.stop()
     p = f["df"]
@@ -26,7 +25,7 @@ def render(code: str, label: str, icon: str) -> None:
                  if waste > 0 else "전환 없이 광고비만 쓴 키워드가 없습니다."])
     st.caption("키워드는 '검색 영역' 행만 사용합니다(비검색·외부채널은 키워드가 '-'). "
                f"분류 기준: 제외 후보=광고비 ₩{cfg['exclude_min_cost']:,} 이상 & 주문 0, 데이터 부족=클릭 {cfg['min_clicks']} 미만 "
-               "(로켓/윙 기준값은 '📤 파일 업로드·설정' → 기준값 탭에서 따로 변경)")
+               "(기준값은 '📤 파일 업로드·설정' → 기준값 탭에서 변경)")
 
     t_tbl, t_quad, t_cls, t_grp = st.tabs(["키워드 테이블", "4분면 산점도", "자동 분류", "키워드 그룹 비교"])
 
@@ -34,7 +33,7 @@ def render(code: str, label: str, icon: str) -> None:
            "cpa": st.column_config.NumberColumn("CPA", format="₩%d", help="광고비 ÷ 주문수"),
            "ctr": st.column_config.NumberColumn("CTR", format="percent"), "cvr": st.column_config.NumberColumn("CVR", format="percent"),
            "roas": st.column_config.NumberColumn("ROAS", format="percent", help="전환매출액 ÷ 광고비"),
-           "be_roas": st.column_config.NumberColumn(ui.ref_label(f["stype"]), format="percent"),
+           "be_roas": st.column_config.NumberColumn("손익분기 ROAS", format="percent"),
            "rev": st.column_config.NumberColumn("전환매출", format="₩%d"), "keyword": "키워드",
            "impressions": "노출", "clicks": "클릭", "orders": "주문"}
     cols = ["keyword", "분류", "impressions", "clicks", "ctr", "cpc", "cost", "orders", "cvr", "rev", "roas", "cpa", "be_roas"]
@@ -60,7 +59,7 @@ def render(code: str, label: str, icon: str) -> None:
                                 customdata=g[["clicks", "orders", "impressions"]].values,
                                 hovertemplate="<b>%{text}</b><br>광고비 ₩%{x:,.0f}<br>ROAS %{y:.0f}%<br>클릭 %{customdata[0]:.0f} · 주문 %{customdata[1]:.0f}<extra></extra>")
             fig.add_hline(y=be * 100, line_dash="dash", line_color="#E45756",
-                          annotation_text=f"{ui.ref_label(f['stype'])} {be*100:.0f}%", annotation_position="top left")
+                          annotation_text=f"손익분기 ROAS {be*100:.0f}%", annotation_position="top left")
             fig.add_vline(x=split, line_dash="dot", line_color="#999",
                           annotation_text=f"광고비 중앙값 ₩{split:,.0f}", annotation_position="bottom right")
             fig.update_layout(xaxis_title="광고비(₩)", yaxis_title="ROAS(%)")
@@ -71,7 +70,7 @@ def render(code: str, label: str, icon: str) -> None:
     with t_cls:
         order = ["효자", "제외 후보", "입찰 상향 후보", "데이터 부족", "관찰/개선"]
         tabs = st.tabs([f"{n} ({int((kw['분류'] == n).sum())})" for n in order])
-        desc = {"효자": "ROAS가 기준(로켓=손익분기, 윙=목표) 이상 — 유지", "제외 후보": "광고비를 쓰고도 주문 0건 — 제외 키워드로 등록 검토",
+        desc = {"효자": "ROAS가 손익분기 이상 — 유지", "제외 후보": "광고비를 쓰고도 주문 0건 — 제외 키워드로 등록 검토",
                 "입찰 상향 후보": "ROAS 양호 & 노출 적음 — 입찰가를 올려 노출 확대", "데이터 부족": "클릭이 적어 판단 보류",
                 "관찰/개선": "ROAS가 기준 미만 — 입찰 하향·상품 구성 점검"}
         for tb, n in zip(tabs, order):

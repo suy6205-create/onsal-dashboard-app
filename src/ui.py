@@ -194,127 +194,74 @@ def period_label(s: str, e: str) -> str:
     return s[5:].replace("-", "/") if s == e else f"{s[5:].replace('-', '/')}~{e[5:].replace('-', '/')}"
 
 
-# ---------------------------------------------------------------- 광고 필터
-STYPE = {"로켓배송": "Retail", "쿠팡윙": "3P"}
-STYPE_LABEL = {v: k for k, v in STYPE.items()}
-
-
-def ref_label(stype: str) -> str:
-    """ROAS 기준선 이름. 로켓=손익분기(마진 기반), 윙=목표 ROAS(마진 정보 없음)."""
-    return {"로켓배송": "손익분기 ROAS", "쿠팡윙": "목표 ROAS"}.get(stype, "기준 ROAS(로켓=손익분기·윙=목표)")
-
-
-def _drop_nested(spans: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """다른 기간에 완전히 포함되는 기간(예: 월간 파일 안의 주간·일자 파일)은 이중 집계되므로 제외."""
-    keep, dropped = [], []
-    for sp in spans:
-        if any(o != sp and o[0] <= sp[0] and o[1] >= sp[1] for o in spans):
-            dropped.append(sp)
-        else:
-            keep.append(sp)
-    return keep, dropped
-
-
-def type_cfg(cfg: dict, code: str) -> dict:
-    """판매방식별 기준값. 로켓(Retail)은 기본 키, 윙(3P)은 wing_ 접두 키로 덮어쓴다."""
-    c = dict(cfg)
-    if code == "3P":
-        for k in ("exclude_min_cost", "min_clicks", "bid_up_max_impressions"):
-            if cfg.get(f"wing_{k}") is not None:
-                c[k] = cfg[f"wing_{k}"]
-    return c
-
-
-def _set_range(rkey: str, s: str, e: str) -> None:
-    st.session_state[rkey] = (pd.Timestamp(s).date(), pd.Timestamp(e).date())
-
-
-def _quick_cb(key: str, optmap: dict) -> None:
-    sel = st.session_state.get(f"{key}_quick")
-    if sel in optmap:
-        _set_range(f"{key}_rng", *optmap[sel])
-    st.session_state[f"{key}_quick"] = "직접 입력"          # 다시 같은 항목을 고를 수 있게 되돌림
-
-
-def period_kind(s: str, e: str) -> str:
-    n = (pd.Timestamp(e) - pd.Timestamp(s)).days + 1
-    return "월간" if n >= 28 else "주간" if n == 7 else "일자" if n == 1 else "기간"
-
-
-def ad_filters(d: dict, cfg: dict, key: str, allow_sale_type: bool = True,
-               force_retail: bool = False, default_stype: str = "로켓배송",
-               fixed_stype: str | None = None) -> dict | None:
-    """기간(날짜 범위)/판매방식(로켓·윙)/전환 기준(1·14일) 선택 UI.
-    반환: {df(prep_ad 결과), start, end, window, stype(라벨), kept}."""
+# ---------------------------------------------------------------- 광고 필터 (주 단위 / 일 단위)
+def ad_filters(d: dict, cfg: dict, key: str) -> dict | None:
+    """보기 단위(주/일) · 기간 · 전환 기준(1/14일) 선택.
+    저장 규칙: 광고 데이터는 '일 단위(하루)'와 '주 단위(월~일)' 파일만 저장된다. 주 파일이 있는 주는 그 파일을,
+    없는 주(진행 중)는 일 데이터를 합쳐서 한 번씩만 센다.
+    반환: {df(prep_ad 결과), start, end, window, label, unit, kept}"""
     ad = d["ad"]
     if ad.empty:
-        st.warning("저장된 광고 데이터가 없습니다. '📤 파일 업로드·설정' 에서 광고 XLSX를 올려주세요.")
+        st.warning("저장된 광고 데이터가 없습니다. '📤 파일 업로드·설정' 에서 광고 XLSX(하루 또는 월~일 한 주)를 올려주세요.")
         return None
-    periods = ad[["period_start", "period_end"]].drop_duplicates().sort_values("period_start")
-    lo, hi = periods["period_start"].min(), periods["period_end"].max()
-    lo_d, hi_d = pd.Timestamp(lo).date(), pd.Timestamp(hi).date()
-    allp = [(r.period_start, r.period_end) for r in periods.itertuples()]
-    rkey = f"{key}_rng"
-    cur = st.session_state.get(rkey)
-    if not (isinstance(cur, (tuple, list)) and 1 <= len(cur) <= 2 and all(lo_d <= x <= hi_d for x in cur)):
-        st.session_state[rkey] = (lo_d, hi_d)                   # 처음이거나 데이터 범위를 벗어났으면 전체 기간
-    quick = {"전체 기간": (lo, hi)}
-    for sp in allp:
-        if sp[0] != sp[1]:
-            quick[f"{period_label(*sp)} · {period_kind(*sp)}({(pd.Timestamp(sp[1]) - pd.Timestamp(sp[0])).days + 1}일)"] = sp
-    cq, c1, c2, c3 = st.columns([2.2, 2.2, 1.8, 1.2])
-    cq.selectbox("빠른 선택 (저장된 기간)", ["직접 입력"] + list(quick), key=f"{key}_quick",
-                 on_change=_quick_cb, args=(key, quick),
-                 help="업로드한 주간·월간 파일의 기간을 한 번에 선택합니다. 고르면 옆의 날짜가 자동으로 바뀝니다.")
-    rng = c1.date_input("기간 (시작일 ~ 종료일)", min_value=lo_d, max_value=hi_d, key=rkey,
-                        help="일자 파일은 날짜별로 걸러지지만, 주간·월간 파일은 일자별로 나눌 수 없어 "
-                             "선택한 기간 안에 파일 전체가 들어올 때만 포함됩니다.")
-    s0, e0 = (rng[0], rng[-1]) if isinstance(rng, (tuple, list)) and len(rng) else (rng, rng)
-    s_sel, e_sel = str(s0), str(e0)
-    if fixed_stype:
-        stype = fixed_stype
-        c2.markdown(f"판매방식: **{fixed_stype}**")
-    elif force_retail or not allow_sale_type:
-        stype = "로켓배송"
-        c2.markdown("판매방식: **로켓배송(Retail)**")
-    else:
-        opts = ["로켓배송", "쿠팡윙", "전체"]
-        stype = c2.radio("판매방식", opts, index=opts.index(default_stype), horizontal=True, key=f"{key}_st",
-                         help="로켓배송=Retail(로켓 판매 상품 광고), 쿠팡윙=3P(판매자배송 광고)")
+    c1, c2 = st.columns([1.6, 1.2])
+    unit = c1.radio("보기 단위", ["주 단위", "일 단위"], horizontal=True, key=f"{key}_unit",
+                    help="주 단위=월~일 한 주 합계(진행 중인 주는 지금까지 올린 일 데이터 합), 일 단위=하루 단위 파일이 있는 날짜")
     default_w = 14 if int(cfg["attribution_days"]) == 14 else 1
-    window = c3.radio("전환 기준", [14, 1], index=0 if default_w == 14 else 1, horizontal=True,
+    window = c2.radio("전환 기준", [14, 1], index=0 if default_w == 14 else 1, horizontal=True,
                       format_func=lambda x: f"{x}일", key=f"{key}_w",
                       help="광고 클릭/노출 후 N일 이내 발생한 주문을 광고 성과로 인정")
-    inside = [sp for sp in allp if sp[0] >= s_sel and sp[1] <= e_sel]
-    partial = [sp for sp in allp if sp not in inside and sp[0] <= e_sel and sp[1] >= s_sel]
-    kept, dropped = _drop_nested(inside)
-    if partial:
-        st.warning("선택 기간과 일부만 겹쳐 **제외된 파일**: " + ", ".join(period_label(*sp) for sp in partial)
-                   + " — 주간·월간 파일은 일자별로 나눌 수 없습니다. 아래 버튼으로 파일 전체 기간을 바로 볼 수 있어요. "
-                     "하루 단위로 보려면 일자별 광고 파일(시작일=종료일)을 올려야 합니다.")
-        bc = st.columns(min(len(partial), 4))
-        for i, sp in enumerate(partial[:4]):
-            bc[i].button(f"👉 {period_label(*sp)} {period_kind(*sp)} 전체 보기", key=f"{key}_pb{i}",
-                         on_click=_set_range, args=(rkey, sp[0], sp[1]))
-    if dropped:
-        st.caption("ℹ️ 더 큰 기간 파일에 포함되어 이중 집계를 막으려고 뺀 파일: "
-                   + ", ".join(period_label(*sp) for sp in dropped))
-    if not kept:
-        st.info("선택한 기간에 포함되는 광고 데이터가 없습니다. 기간을 조정하세요.")
+    p_all = M.prep_ad(ad, window, d["map"], d["master"], cfg["default_breakeven_roas"], supply_by_sku(d["daily"]))
+    t = M.tag_ad_periods(p_all)
+    n_legacy = len(set(zip(p_all["period_start"], p_all["period_end"]))) - len(set(zip(t["period_start"], t["period_end"])))
+    if n_legacy > 0:
+        st.caption(f"ℹ️ 일·주 단위가 아닌 예전 기간 데이터 {n_legacy}건은 계산에서 제외했습니다 "
+                   "(파일 업로드·설정 → 광고 데이터 관리에서 지울 수 있어요).")
+    with st.expander("📅 광고 데이터 수집 현황 (최근 8주)"):
+        cov = M.ad_coverage(t)
+        st.dataframe(cov[["주", "주 단위 파일", "일 단위 파일"]], hide_index=True, width="stretch")
+        st.caption("주 단위 파일이 있으면 그 주는 주 파일로 계산합니다. 아직 끝나지 않은 주는 하루씩 올린 일 파일을 합칩니다.")
+    if t.empty:
+        st.info("일·주 단위 광고 데이터가 아직 없습니다. 하루 또는 월~일 한 주 단위로 내려받아 올려주세요.")
         return None
-    idx = pd.MultiIndex.from_frame(ad[["period_start", "period_end"]])
-    df = ad[idx.isin(kept)]
-    if stype != "전체":
-        df = df[df["sale_type"] == STYPE[stype]]
-    spans = sorted(kept)
-    for a, b in zip(spans, spans[1:]):
-        if b[0] <= a[1]:
-            st.warning("포함된 광고 기간이 서로 겹칩니다. 합계가 이중 집계될 수 있어요.")
-            break
-    p = M.prep_ad(df, window, d["map"], d["master"], cfg["default_breakeven_roas"], supply_by_sku(d["daily"]),
-                   cfg.get("wing_target_roas"))
-    return {"df": p, "start": min(sp[0] for sp in kept), "end": max(sp[1] for sp in kept),
-            "window": window, "stype": stype, "kept": kept}
+
+    if unit == "주 단위":
+        wf = M.ad_weekly_frame(t)
+        wk = wf.groupby("week").agg(n_days=("n_days", "max"), weekly=("kind", lambda k: (k == "주").any())).reset_index().sort_values("week")
+        labels = {r.week: f"{M.week_label(r.week)} · " + ("주 파일" if r.weekly else f"진행 중 · 일 {int(r.n_days)}/7") for r in wk.itertuples()}
+        opts = list(labels.values())
+        kskey = f"{key}_wk"
+        default = opts[-4:]
+        st.session_state[kskey] = [x for x in st.session_state.get(kskey, default) if x in opts] or default
+        sel = st.multiselect("주 선택 (여러 주 선택 가능)", opts, key=kskey)
+        if not sel:
+            st.info("보고 싶은 주를 선택하세요.")
+            return None
+        weeks = [w for w, lab in labels.items() if lab in sel]
+        df = wf[wf["week"].isin(weeks)]
+        label = f"주 단위 {len(weeks)}주 ({M.week_label(min(weeks))[:5]} ~ {M.week_label(max(weeks))[-5:]})" if len(weeks) > 1 else f"주 단위 {M.week_label(weeks[0])}"
+    else:
+        dd = t[t["kind"] == "일"]
+        if dd.empty:
+            st.info("일 단위(하루) 파일이 없습니다. 주 단위 파일은 하루씩 나눌 수 없어서 '주 단위'로 보세요.")
+            return None
+        lo_d, hi_d = pd.Timestamp(dd["period_start"].min()).date(), pd.Timestamp(dd["period_start"].max()).date()
+        rkey = f"{key}_dr"
+        cur = st.session_state.get(rkey)
+        if not (isinstance(cur, (tuple, list)) and 1 <= len(cur) <= 2 and all(lo_d <= x <= hi_d for x in cur)):
+            st.session_state[rkey] = (max(lo_d, hi_d - pd.Timedelta(days=6)), hi_d)
+        rng = st.date_input("날짜 범위", min_value=lo_d, max_value=hi_d, key=rkey,
+                            help="하루 단위 파일이 있는 날짜만 계산됩니다.")
+        s0, e0 = (rng[0], rng[-1]) if isinstance(rng, (tuple, list)) and len(rng) else (rng, rng)
+        df = dd[(dd["period_start"] >= str(s0)) & (dd["period_start"] <= str(e0))]
+        if df.empty:
+            st.info("선택한 날짜에 일 단위 광고 파일이 없습니다.")
+            return None
+        n_days = df["period_start"].nunique()
+        label = f"일 단위 {period_label(str(s0), str(e0))} (파일 있는 날 {n_days}일)"
+    kept = sorted(set(zip(df["period_start"], df["period_end"])))
+    return {"df": df, "start": min(sp[0] for sp in kept), "end": max(sp[1] for sp in kept),
+            "window": window, "label": label, "unit": unit, "kept": kept, "stype": "로켓배송"}
 
 
 def apply_extra_filters(p: pd.DataFrame, key: str, campaign=True, group=True, placement=True,

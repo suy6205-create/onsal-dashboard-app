@@ -16,5 +16,5 @@ for f in sorted((ROOT / "sample_data").glob("basic_operation_rocket_*.csv")):
     print(f"판매 {f.name}: {ps.brand_rows}행, 날짜 {ps.dates}, 신규 SKU {new}")
 for f in sorted((ROOT / "sample_data").glob("A*_pa_total_campaign_*.xlsx")):
     s, e = L.parse_ad_filename(f.name)
-    n = service.ingest_ad(L.parse_ad_xlsx(str(f)), s, e, f.name, cfg["brand"])
-    print(f"광고 {f.name}: {s}~{e}, 매핑 초안 {n}개")
+    r = service.ingest_ad(L.parse_ad_xlsx(str(f)), s, e, f.name, cfg["brand"])
+    print(f"광고 {f.name}: {s}~{e} -> {r.status} {r.message}")

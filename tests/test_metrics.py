@@ -128,15 +128,6 @@ def test_trial_effect():
     assert e["추가판매(7일)"] == 14 and e["회수추정액"] == 28000
 
 
-def test_wing_rows_use_target_roas_instead_of_breakeven():
-    ad = pd.DataFrame({"sale_type": ["Retail", "3P"], "ad_option_id": ["A", "B"], "conv_option_id": ["A", "B"],
-                       "keyword": ["x", "y"], "orders_t_14": [1, 1], "qty_t_14": [1, 1], "rev_t_14": [100.0, 100.0],
-                       "orders_d_14": [1, 1], "rev_d_14": [100.0, 100.0], "rev_i_14": [0.0, 0.0]})
-    amap = pd.DataFrame({"광고옵션ID": ["A"], "SKU ID": ["1"], "묶음수량": [1], "광고상품명": [""], "비고": [""]})
-    p = M.prep_ad(ad, 14, amap, _master(), 4.0, {"1": 6000}, wing_target=3.0)
-    assert p.loc[p["sale_type"] == "3P", "be_roas"].iloc[0] == 3.0
-    assert p.loc[p["sale_type"] == "Retail", "be_roas"].iloc[0] == pytest.approx(10000 / 2000)
-
 
 def _one_day(stock, soldout_flag, outbound=2):
     return pd.DataFrame({"date": ["2026-09-30"], "sku_id": ["1"], "sku_name": ["a"], "barcode": [""],
@@ -162,3 +153,22 @@ def test_ad_row_brand_uses_map_then_name():
     got = M.ad_row_brand(ad, amap, master, ["온살", "루메아카이브"])
     assert list(got) == ["온살", "루메아카이브", "루메아카이브"]   # C 는 매핑이 없어 상품명으로 판별
     assert M.unmapped_options(pd.DataFrame(), ["온살"]).empty
+
+
+def test_supply_margin_matches_existing_sheet_values():
+    # 비타민 앰플: 판매가 10,000 · 수수료 40% · 원가 3,500 -> 기존 시트의 공급가(-VAT) 5,455 / 마진 1,955
+    r = M.supply_margin(10000, 3500, 0.40)
+    assert r["공급가(VAT 포함)"] == 6000 and r["공급가(VAT 제외)"] == 5455 and r["개당 마진"] == 1955
+    assert r["마진율(공급가 기준)"] == pytest.approx(1955 / 5455)
+    assert r["마진율(소비자가 기준)"] == pytest.approx(0.1955) and r["손익분기 ROAS"] == pytest.approx(10000 / 1955)
+    # 히알루론 세럼: 판매가 9,500 · 수수료 32.26% -> 공급가(+VAT) 6,435 / (-VAT) 5,850
+    h = M.supply_margin(9500, 3518, 1 - 6435 / 9500)
+    assert h["공급가(VAT 포함)"] == 6435 and h["공급가(VAT 제외)"] == 5850 and h["개당 마진"] == 2332
+
+
+def test_supply_margin_edge_cases_and_inverse():
+    assert M.supply_margin(0, 1000, 0.4)["공급가(VAT 제외)"] == 0 and M.supply_margin(0, 1000, 0.4)["손익분기 ROAS"] is None
+    loss = M.supply_margin(10000, 6000, 0.4)                       # 원가가 공급가보다 높으면 적자
+    assert loss["개당 마진"] < 0 and loss["손익분기 ROAS"] is None
+    assert M.supply_margin(10000, 3500, 0.4, discount=1000)["소비자가"] == 9000
+    assert M.fee_rate_from_supply(10000, 6000) == pytest.approx(0.4) and M.fee_rate_from_supply(0, 6000) is None

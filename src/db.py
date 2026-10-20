@@ -230,6 +230,18 @@ def upsert_ad(ad: pd.DataFrame, start: str, end: str, filename: str = "") -> Non
         _log(c, filename, "광고", start, end, len(df))
 
 
+def delete_ad_periods(spans) -> None:
+    """(시작, 종료) 목록에 해당하는 광고 데이터를 삭제."""
+    with conn() as c:
+        for s, e in spans:
+            c.execute(text("DELETE FROM ad_rows WHERE period_start=:s AND period_end=:e"), {"s": s, "e": e})
+
+
+def delete_all_ad() -> None:
+    with conn() as c:
+        c.execute(text("DELETE FROM ad_rows"))
+
+
 def read_ad() -> pd.DataFrame:
     return _read("SELECT * FROM ad_rows")
 

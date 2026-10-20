@@ -14,7 +14,7 @@ d = ui.load_all(cfg)
 ui.no_data_stop(d, need_ad=True)
 exclude = st.sidebar.toggle("체험단 제외 기준(순수 판매)", value=False,
                             help="판매량·소비자가매출에서 체험단 수량을 뺍니다. 오가닉 추정은 항상 체험단을 제외합니다.")
-f = ui.ad_filters(d, cfg, "int", force_retail=True)
+f = ui.ad_filters(d, cfg, "int")
 if f is None:
     st.stop()
 st.info("⚖️ **단위 주의**: 광고 전환매출은 *소비자가* 기준, 로켓 매출은 *공급가*(쿠팡 지급액) 기준입니다. "

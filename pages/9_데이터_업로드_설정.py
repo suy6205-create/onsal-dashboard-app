@@ -13,8 +13,8 @@ from src import ui
 
 cfg = ui.setup("파일 업로드·설정", "📤")
 ui.require_admin("파일 업로드·설정 화면")
-t_up, t_hist, t_master, t_map, t_cfg, t_exp = st.tabs(
-    ["파일 업로드", "업로드 이력 · 누락 캘린더", "상품 마스터", "광고 매핑표", "기준값", "내보내기"])
+t_up, t_hist, t_ad, t_master, t_map, t_cfg, t_exp = st.tabs(
+    ["파일 업로드", "업로드 이력 · 누락 캘린더", "광고 데이터 관리", "상품 마스터", "광고 매핑표", "기준값", "내보내기"])
 
 
 def _d(s: str) -> date:
@@ -25,6 +25,8 @@ def _d(s: str) -> date:
 with t_up:
     st.markdown("**① 판매 CSV(`basic_operation_rocket_*.csv`) ② 광고 XLSX(`*_pa_total_campaign_*.xlsx`)** 를 "
                 "여러 개 한꺼번에 올려도 됩니다. 확인 후 [저장]을 누르세요. 같은 날짜/기간은 덮어씁니다.")
+    st.info("📌 **광고 파일은 '하루' 또는 '월요일~일요일 한 주' 단위로 내려받아 올려주세요.** "
+            "월간·임의 구간 파일은 데이터가 겹쳐서 저장하지 않습니다. 주 단위 파일을 올리면 그 주의 일 단위 파일은 자동으로 대체됩니다.")
     files = st.file_uploader("파일 선택 (드래그앤드롭)", type=["csv", "xlsx"], accept_multiple_files=True)
     master, amap = config.load_master(), config.load_map()
     existing_periods = db.ad_periods()
@@ -72,23 +74,29 @@ with t_up:
                     if s > e:
                         st.error("시작일이 종료일보다 늦습니다.")
                         continue
-                    kind = "일자 데이터" if s == e else "기간 데이터(일자 차트에는 섞지 않음)"
+                    dropped = ad.attrs.get("dropped_non_retail", 0)
+                    if ad.empty:
+                        st.error("로켓배송(Retail) 광고 행이 없습니다. 쿠팡윙(3P) 광고는 저장하지 않아요.")
+                        continue
+                    plan = service.plan_ad_ingest(s, e, existing_periods)
+                    if plan.status == "rejected":
+                        st.error(plan.message)
+                        continue
                     draft = L.draft_ad_map(ad, master, config.brand_list(cfg), amap)
                     unmapped = int((draft["SKU ID"] == "").sum())
                     cc = st.columns(4)
-                    cc[0].metric("행 수", len(ad))
-                    cc[1].metric("Retail / 3P", f"{(ad['sale_type'] == 'Retail').sum()} / {(ad['sale_type'] == '3P').sum()}")
-                    cc[2].metric("광고비(전체)", ui.won(ad["cost"].sum()))
+                    cc[0].metric("저장할 행 수", len(ad), help="로켓배송(Retail) 광고 행만 저장합니다")
+                    cc[1].metric("제외된 행(윙 등)", int(dropped))
+                    cc[2].metric("광고비", ui.won(ad["cost"].sum()))
                     cc[3].metric("신규 매핑 후보 옵션", f"{len(draft)}개")
-                    st.caption(f"저장 형태: {kind}")
-                    if len(existing_periods):
-                        ov = existing_periods[(existing_periods.period_start <= e) & (existing_periods.period_end >= s) &
-                                              ~((existing_periods.period_start == s) & (existing_periods.period_end == e))]
-                        if len(ov):
-                            st.warning("이미 저장된 다른 기간과 겹칩니다 → 합산하면 광고비가 이중 집계될 수 있어요: "
-                                       + ", ".join(f"{a}~{b}" for a, b in zip(ov.period_start, ov.period_end)))
-                        if ((existing_periods.period_start == s) & (existing_periods.period_end == e)).any():
-                            st.info("같은 기간이 이미 있어 덮어씁니다.")
+                    st.caption(f"저장 형태: **{plan.kind} 단위** ({s}~{e})")
+                    if plan.status == "skipped":
+                        st.warning(plan.message)
+                        continue
+                    if plan.message:
+                        st.info(plan.message)
+                    if len(existing_periods) and ((existing_periods.period_start == s) & (existing_periods.period_end == e)).any():
+                        st.info("같은 기간이 이미 있어 덮어씁니다.")
                     if len(draft):
                         st.warning(f"매핑표에 없는 옵션 {len(draft)}개 → 이름으로 SKU·묶음수량을 추정해 초안으로 추가합니다"
                                    + (f" (그중 SKU 미확정 {unmapped}개)" if unmapped else "") + ". 광고 매핑표 탭에서 확정하세요.")
@@ -104,8 +112,12 @@ with t_up:
                 new = service.ingest_sales(sv[2], sv[1])
                 st.success(f"{sv[1]} 저장 완료" + (f" · 신규 SKU {len(new)}개 마스터 추가" if new else ""))
             else:
-                n = service.ingest_ad(sv[2], sv[3], sv[4], sv[1], config.brand_list(cfg))
-                st.success(f"{sv[1]} 저장 완료 ({sv[3]}~{sv[4]})" + (f" · 매핑 초안 {n}개 추가" if n else ""))
+                r = service.ingest_ad(sv[2], sv[3], sv[4], sv[1], config.brand_list(cfg))
+                if r.status == "saved":
+                    st.success(f"{sv[1]} 저장 완료 ({r.kind} 단위 {sv[3]}~{sv[4]})" + (f" · 매핑 초안 {r.n_draft}개 추가" if r.n_draft else "")
+                               + (f" · {r.message}" if r.message else ""))
+                else:
+                    st.warning(f"{sv[1]}: {r.message}")
         pend = service.pending_price_skus()
         if len(pend):
             st.warning("가격 미입력 SKU: " + ", ".join(pend["품목"]) + " — 상품 마스터 탭에서 입력하세요.")
@@ -151,6 +163,39 @@ with t_hist:
             fig.update_layout(title=f"{title} (초록=있음, 빨강=없음)", yaxis=dict(autorange="reversed"))
             ui.show(fig, 120 + 38 * len(z))
 
+# ------------------------------------------------------------ 광고 데이터 관리
+with t_ad:
+    st.caption("저장된 광고 데이터를 기간별로 확인하고 지울 수 있습니다. 광고 데이터는 **일 단위(하루)** 와 **주 단위(월~일)** 만 저장됩니다.")
+    per = db.ad_periods()
+    if per.empty:
+        st.info("저장된 광고 데이터가 없습니다.")
+    else:
+        per = per.assign(구분=[{"일": "일 단위", "주": "주 단위"}.get(L.classify_ad_period(a, b), "⚠️ 규칙 밖(예전 월간·임의 구간)")
+                              for a, b in zip(per.period_start, per.period_end)])
+        per["기간"] = [f"{a}~{b}" if a != b else a for a, b in zip(per.period_start, per.period_end)]
+        st.dataframe(per[["기간", "구분", "n_rows", "source_file"]].rename(columns={"n_rows": "행 수", "source_file": "파일명"}),
+                     hide_index=True, width="stretch")
+        odd = per[per["구분"].str.startswith("⚠️")]
+        if len(odd):
+            st.warning(f"규칙 밖 기간 {len(odd)}개는 화면 계산에서 이미 제외됩니다. 아래에서 지워도 됩니다.")
+        sel = st.multiselect("삭제할 기간 선택", list(per["기간"]), key="ad_del_sel")
+        c1, c2 = st.columns(2)
+        if c1.button("🗑️ 선택한 기간 삭제", disabled=not sel):
+            spans = [(r.period_start, r.period_end) for r in per.itertuples() if r.기간 in sel]
+            db.delete_ad_periods(spans)
+            st.success(f"{len(spans)}개 기간을 삭제했습니다.")
+            st.rerun()
+        st.markdown("---")
+        st.markdown("**광고 데이터 전체 삭제** — 새 규칙(일/주 단위)으로 처음부터 다시 올릴 때 사용합니다. 판매·체험단·마스터는 지워지지 않습니다.")
+        st.download_button("⬇️ 삭제 전 백업(엑셀) 받기", to_excel_bytes({"광고": db.read_ad()}),
+                           file_name=f"광고데이터_백업_{date.today()}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        ok = st.checkbox("백업을 받았고, 광고 데이터를 모두 지우는 것을 확인했습니다", key="ad_wipe_ok")
+        if st.button("⚠️ 광고 데이터 전체 삭제", type="primary", disabled=not ok):
+            db.delete_all_ad()
+            st.success("광고 데이터를 모두 삭제했습니다. 이제 하루 또는 월~일 한 주 단위 파일을 올려주세요.")
+            st.rerun()
+
 # ------------------------------------------------------------ 마스터
 with t_master:
     st.caption("가격·원가는 MD가 직접 입력합니다. 공급가(매입원가)는 판매 데이터에서 자동으로 가져오며, 변경되면 이력이 남습니다. "
@@ -166,7 +211,7 @@ with t_master:
         if e["SKU ID"].duplicated().any():
             st.error("SKU ID가 중복됩니다.")
         else:
-            e = e.fillna({"판매가": 0, "할인": 0, "원가": 0, "판매수수료율": 0, "운영중": "Y", "품목": "", "광고명키워드": "", "브랜드": config.DEFAULT_BRAND})
+            e = e.fillna({"판매가": 0, "할인": 0, "원가": 0, "판매수수료율": 0, "운영중": "Y", "품목": "", "광고명키워드": "", "브랜드": config.DEFAULT_BRAND, "회사코드": "", "유통기한": ""})
             config.save_master(e)
             st.success("저장했습니다.")
     chg = db.read_sales_daily()
@@ -227,19 +272,12 @@ with t_cfg:
     new["stock_yellow_days"] = c[1].number_input("🟡 재고소진 예상일 이하", 1, 90, int(cfg["stock_yellow_days"]))
     new["drop_pct"] = c[2].number_input("판매 급감 기준(%)", 1, 100, int(cfg["drop_pct"]), help="7일평균이 직전 7일 대비 이 % 이상 줄면 경고")
     c = st.columns(3)
-    new["exclude_min_cost"] = c[0].number_input("🚀 로켓: 제외 키워드 기준 광고비(₩)", 0, 1000000, int(cfg["exclude_min_cost"]), step=1000)
-    new["min_clicks"] = c[1].number_input("🚀 로켓: 최소 클릭 수(미만=데이터 부족)", 0, 1000, int(cfg["min_clicks"]))
-    new["bid_up_max_impressions"] = c[2].number_input("🚀 로켓: 입찰 상향 후보 노출 상한", 0, 10_000_000, int(cfg["bid_up_max_impressions"]), step=100)
-    c = st.columns(3)
-    new["wing_exclude_min_cost"] = c[0].number_input("🪽 윙: 제외 키워드 기준 광고비(₩)", 0, 1000000, int(cfg.get("wing_exclude_min_cost", 1500)), step=100,
-                                                      help="윙은 키워드 수가 많고 개당 광고비가 작아 로켓보다 낮게 둡니다")
-    new["wing_min_clicks"] = c[1].number_input("🪽 윙: 최소 클릭 수(미만=데이터 부족)", 0, 1000, int(cfg.get("wing_min_clicks", 10)))
-    new["wing_bid_up_max_impressions"] = c[2].number_input("🪽 윙: 입찰 상향 후보 노출 상한", 0, 10_000_000, int(cfg.get("wing_bid_up_max_impressions", 1000)), step=100)
+    new["exclude_min_cost"] = c[0].number_input("제외 키워드 기준 광고비(₩)", 0, 1000000, int(cfg["exclude_min_cost"]), step=1000)
+    new["min_clicks"] = c[1].number_input("최소 클릭 수(미만=데이터 부족)", 0, 1000, int(cfg["min_clicks"]))
+    new["bid_up_max_impressions"] = c[2].number_input("입찰 상향 후보 노출 상한", 0, 10_000_000, int(cfg["bid_up_max_impressions"]), step=100)
     c = st.columns(3)
     new["trial_fee_per_unit"] = c[0].number_input("체험단 대행비 기본값(개당, VAT 별도, 0=매번 직접 입력)", 0, 1_000_000, int(cfg["trial_fee_per_unit"]), step=1000)
     new["vat"] = c[1].number_input("VAT 배수", 1.0, 2.0, float(cfg["vat"]), step=0.05)
-    new["wing_target_roas"] = c[1].number_input("쿠팡윙 목표 ROAS(배, 3.0=300%)", 0.5, 20.0, float(cfg.get("wing_target_roas", 3.0)), step=0.1,
-                                                 help="윙 광고는 마진 정보가 없어 손익분기 대신 이 값을 기준선으로 씁니다")
     new["default_breakeven_roas"] = c[2].number_input("임시 손익분기 ROAS(배)", 0.5, 20.0, float(cfg["default_breakeven_roas"]), step=0.1,
                                                        help="상품 마스터에 가격·원가가 없을 때만 사용")
     c = st.columns(3)

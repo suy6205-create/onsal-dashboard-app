@@ -18,7 +18,7 @@ SETTINGS_PATH = CONFIG_DIR / "settings.yaml"
 MASTER_PATH = CONFIG_DIR / "product_master.csv"
 MAP_PATH = CONFIG_DIR / "ad_sku_map.csv"
 
-MASTER_COLS = ["SKU ID", "품목", "판매가", "할인", "원가", "판매수수료율", "운영중", "광고명키워드", "브랜드"]
+MASTER_COLS = ["SKU ID", "품목", "판매가", "할인", "원가", "판매수수료율", "운영중", "광고명키워드", "브랜드", "회사코드", "유통기한"]
 DEFAULT_BRAND = "온살"   # 브랜드 칸이 없던 예전 데이터는 모두 이 브랜드
 MAP_COLS = ["광고옵션ID", "광고상품명", "SKU ID", "묶음수량", "비고"]
 
@@ -26,10 +26,9 @@ DEFAULTS = {
     "brand": "온살", "brands": ["온살", "루메아카이브"], "attribution_days": 14, "target_stock_days": 14,
     "stock_red_days": 7, "stock_yellow_days": 14, "exclude_min_cost": 5000,
     "min_clicks": 10, "drop_pct": 30, "bid_up_max_impressions": 1000,
-    "wing_target_roas": 3.0,
-    "wing_exclude_min_cost": 1500, "wing_min_clicks": 10, "wing_bid_up_max_impressions": 1000,
     "trial_fee_per_unit": 0, "vat": 1.1, "default_breakeven_roas": 4.0,
     "keyword_groups": {},
+    "sheet_url": "",   # 구글 시트(판매가·공급가·유통기한·회사 코드) 주소 — 공개 저장소에 넣지 않고 설정(DB)에만 저장
     "po_vendor_id": "A00065399", "po_vendor_name": "오아 주식회사", "po_center": "VF107",   # 발주서 고정값 (기준값 탭에서 바꿀 수 있음)
 }
 
@@ -72,11 +71,12 @@ def load_master() -> pd.DataFrame:
     df = _csv(_load_text("product_master", MASTER_PATH), {"SKU ID": str})
     for c in MASTER_COLS:
         if c not in df.columns:
-            df[c] = "" if c in ("SKU ID", "품목", "운영중", "광고명키워드", "브랜드") else 0
+            df[c] = "" if c in ("SKU ID", "품목", "운영중", "광고명키워드", "브랜드", "회사코드", "유통기한") else 0
     for c in ["판매가", "할인", "원가", "판매수수료율"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["운영중"] = df["운영중"].fillna("Y")
-    df["광고명키워드"] = df["광고명키워드"].fillna("")
+    for c in ("광고명키워드", "회사코드", "유통기한"):
+        df[c] = df[c].fillna("").astype(str).replace("nan", "")
     df["브랜드"] = df["브랜드"].replace("", pd.NA).fillna(DEFAULT_BRAND).astype(str)
     return df[MASTER_COLS]
 

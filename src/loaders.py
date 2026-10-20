@@ -154,6 +154,16 @@ AD_TEXT_COLS = ["billing", "sale_type", "ad_type", "campaign_id", "campaign", "a
 AD_DB_COLS = AD_TEXT_COLS + AD_NUM_COLS
 
 
+def classify_ad_period(start: str, end: str) -> str | None:
+    """광고 리포트 기간 종류: '일'(하루) / '주'(월요일~일요일 7일) / None(그 외: 월간·임의 구간은 받지 않는다)."""
+    s, e = pd.Timestamp(start), pd.Timestamp(end)
+    if s == e:
+        return "일"
+    if (e - s).days == 6 and s.weekday() == 0:
+        return "주"
+    return None
+
+
 def parse_ad_filename(name: str) -> tuple[str, str] | None:
     """A00000001_pa_total_campaign_20260921_20260927.xlsx -> ('2026-09-21','2026-09-27')"""
     m = AD_FILE_RE.search(name)
@@ -209,7 +219,10 @@ def normalize_ad_df(df: pd.DataFrame) -> pd.DataFrame:
               "placement", "billing", "note"):
         out[c] = out[c].fillna("").astype(str).str.strip()
     out["placement_group"] = out["placement"].apply(placement_group)
-    return out[AD_DB_COLS].reset_index(drop=True)
+    n_other = int((out["sale_type"] != "Retail").sum())          # 쿠팡윙(3P) 등 로켓 외 광고는 저장하지 않는다
+    out = out[out["sale_type"] == "Retail"][AD_DB_COLS].reset_index(drop=True)
+    out.attrs["dropped_non_retail"] = n_other
+    return out
 
 
 def parse_ad_xlsx(file) -> pd.DataFrame:

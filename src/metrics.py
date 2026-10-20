@@ -14,6 +14,8 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
+from .loaders import classify_ad_period
+
 
 # ---------------------------------------------------------------- 기본 비율
 def safe_div(a, b, default=0.0):
@@ -206,8 +208,7 @@ def supply_price_changes(daily: pd.DataFrame) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- 광고
 def prep_ad(ad: pd.DataFrame, window: int, ad_map: pd.DataFrame, master: pd.DataFrame,
-            default_be: float = 4.0, supply_by_sku: dict | None = None,
-            wing_target: float | None = None) -> pd.DataFrame:
+            default_be: float = 4.0, supply_by_sku: dict | None = None) -> pd.DataFrame:
     """기준 어트리뷰션(1/14일) 컬럼을 표준 이름으로 만들고, 옵션→SKU/묶음수량/손익분기 ROAS 를 붙인다."""
     df = ad.copy()
     w = int(window)
@@ -228,8 +229,6 @@ def prep_ad(ad: pd.DataFrame, window: int, ad_map: pd.DataFrame, master: pd.Data
     df["is_halo"] = df["ad_option_id"] != df["conv_option_id"]
     be = sku_breakeven(master, supply_by_sku or {})
     df["be_roas"] = df["exec_sku"].map(be).fillna(default_be)
-    if wing_target:   # 쿠팡윙(3P)은 마진 정보가 없어 손익분기 대신 목표 ROAS 를 기준선으로 쓴다
-        df.loc[df["sale_type"] == "3P", "be_roas"] = wing_target
     df["kw_group"] = np.where(df["keyword"].isin(["-", ""]), "(비검색)", df["keyword"])
     return df
 
@@ -416,3 +415,79 @@ def ad_row_brand(ad: pd.DataFrame, ad_map: pd.DataFrame, master: pd.DataFrame, b
     def by_name(name: str) -> str:
         return next((b for b in brands if b in str(name)), "")
     return from_map.where(from_map.notna() & (from_map != ""), ad["ad_product"].map(by_name)).fillna("")
+
+
+# ---------------------------------------------------------------- 광고: 일 / 주 단위 묶기
+def week_monday(date_str: str) -> str:
+    d = pd.Timestamp(date_str)
+    return (d - pd.Timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+
+
+def week_label(monday: str) -> str:
+    m = pd.Timestamp(monday)
+    return f"{m:%m/%d}~{m + pd.Timedelta(days=6):%m/%d}"
+
+
+def tag_ad_periods(p: pd.DataFrame) -> pd.DataFrame:
+    """광고 행에 kind('일'/'주')와 소속 주(week, 월요일)를 붙이고, 일·주 규칙에 맞지 않는 기간(예전 월간 등)은 뺀다."""
+    if p.empty:
+        return p.assign(kind=pd.Series(dtype=str), week=pd.Series(dtype=str))
+    out = p.copy()
+    spans = set(zip(out["period_start"], out["period_end"]))
+    kinds = {sp: classify_ad_period(*sp) for sp in spans}
+    out["kind"] = [kinds[(s, e)] for s, e in zip(out["period_start"], out["period_end"])]
+    out = out[out["kind"].notna()].copy()
+    out["week"] = [week_monday(s) for s in out["period_start"]]
+    return out
+
+
+def ad_weekly_frame(t: pd.DataFrame) -> pd.DataFrame:
+    """주 단위로 한 번씩만 센 광고 행. 주 파일이 있는 주는 그 파일만, 없는 주는 일 데이터를 합친다(진행 중인 주).
+    n_days: 그 주에 반영된 일수(주 파일=7)."""
+    if t.empty:
+        return t.assign(n_days=pd.Series(dtype=int))
+    has_weekly = set(t.loc[t["kind"] == "주", "week"])
+    out = t[(t["kind"] == "주") | (~t["week"].isin(has_weekly))].copy()
+    days = out[out["kind"] == "일"].groupby("week")["period_start"].nunique()
+    out["n_days"] = [7 if k == "주" else int(days.get(w, 0)) for k, w in zip(out["kind"], out["week"])]
+    return out
+
+
+def ad_coverage(t: pd.DataFrame, today=None, weeks: int = 8) -> pd.DataFrame:
+    """최근 N주의 광고 데이터 수집 현황: 주 파일 유무, 일 파일 개수."""
+    mon_now = week_monday(str(pd.Timestamp(today or pd.Timestamp.today()).date()))
+    rows = []
+    for i in range(weeks - 1, -1, -1):
+        mon = (pd.Timestamp(mon_now) - pd.Timedelta(days=7 * i)).strftime("%Y-%m-%d")
+        sub = t[t["week"] == mon] if len(t) else t
+        rows.append({"주": week_label(mon), "week": mon,
+                     "주 단위 파일": "✅" if len(sub) and (sub["kind"] == "주").any() else "—",
+                     "일 단위 파일": int(sub.loc[sub["kind"] == "일", "period_start"].nunique()) if len(sub) else 0})
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------- 쿠팡 로켓 공급가 · 마진
+def supply_margin(price, cost, fee_rate, discount=0, vat: float = 1.1) -> dict:
+    """판매가·원가·수수료율로 쿠팡 공급가와 마진을 계산한다.
+
+    공급가(VAT 포함) = 소비자가 × (1 − 수수료율)          소비자가 = 판매가 − 할인
+    공급가(VAT 제외) = 공급가(VAT 포함) ÷ 1.1 (원 단위 반올림 — 쿠팡이 지급하는 매입원가와 같은 방식)
+    개당 마진         = 공급가(VAT 제외) − 원가
+    마진율(공급가 기준)  = 마진 ÷ 공급가(VAT 제외)
+    마진율(소비자가 기준) = 마진 ÷ 소비자가           → 광고 손익분기 ROAS = 1 ÷ 이 값 (광고 전환매출은 소비자가 기준)
+    """
+    consumer = (price or 0) - (discount or 0)
+    gross = consumer * (1 - fee_rate)
+    net = int(round(gross / vat)) if gross > 0 else 0
+    margin = net - (cost or 0)
+    rate_supply = margin / net if net > 0 else None
+    rate_consumer = margin / consumer if consumer > 0 else None
+    return {"소비자가": consumer, "공급가(VAT 포함)": int(round(gross)), "공급가(VAT 제외)": net, "개당 마진": margin,
+            "마진율(공급가 기준)": rate_supply, "마진율(소비자가 기준)": rate_consumer,
+            "손익분기 ROAS": (1 / rate_consumer) if rate_consumer and rate_consumer > 0 else None}
+
+
+def fee_rate_from_supply(price, supply_with_vat, discount=0) -> float | None:
+    """쿠팡 공급가(VAT 포함)를 알 때 수수료율 역산: 1 − 공급가 ÷ 소비자가."""
+    consumer = (price or 0) - (discount or 0)
+    return None if consumer <= 0 else 1 - supply_with_vat / consumer

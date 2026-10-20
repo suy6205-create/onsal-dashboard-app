@@ -6,12 +6,16 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src import actions, ui
+from src.loaders import classify_ad_period
 from src import metrics as M
 
 cfg = ui.setup("오늘의 요약", "🏠")
 d = ui.load_all(cfg)
 ui.no_data_stop(d)
 daily, ad, master, trials = d["daily"], d["ad"], d["master"], d["trials"]
+if len(ad):   # 광고는 일(하루)·주(월~일) 단위만 사용. 예전 월간·임의 구간 데이터는 제외
+    _spans_ok = {sp: classify_ad_period(*sp) is not None for sp in set(zip(ad["period_start"], ad["period_end"]))}
+    ad = ad[[_spans_ok[sp] for sp in zip(ad["period_start"], ad["period_end"])]]
 
 st.page_link("pages/9_데이터_업로드_설정.py", label="매일 파일 업로드 (판매 CSV · 광고 XLSX)", icon="📤")
 # ---- 기준일 · 보기 단위 · 데이터 최신성
@@ -77,7 +81,7 @@ if len(ad):
             last = per.iloc[-1]
             ad_ctx = per[(per["period_start"] == last["period_start"]) & (per["period_end"] == last["period_end"])]
             ad_ctx_label = f"가장 최근 광고 기간 ({ui.period_label(last['period_start'], last['period_end'])})"
-ad_p = M.prep_ad(ad_ctx[ad_ctx["sale_type"] == "Retail"], w, d["map"], master,
+ad_p = M.prep_ad(ad_ctx, w, d["map"], master,
                  cfg["default_breakeven_roas"], sup) if len(ad_ctx) else pd.DataFrame()
 
 # ---- 한 줄 요약
@@ -160,38 +164,6 @@ for a in acts:
     box = {"🔴": st.error, "🟡": st.warning, "🟢": st.success}[a["level"]]
     box(f"**{a['level']} {a['title']}**  \n{a['detail']}")
 
-# ---- 로켓 vs 윙 광고 비교
-st.subheader("🚀 로켓배송 vs 🪽 쿠팡윙 광고 비교")
-if len(ad_ctx):
-    both = M.prep_ad(ad_ctx, w, d["map"], master, cfg["default_breakeven_roas"], sup, cfg.get("wing_target_roas"))
-    cmp = M.ad_summary(both, ["sale_type"])
-    if len(cmp) and cmp["cost"].sum() > 0:
-        cmp["구분"] = cmp["sale_type"].map(ui.STYPE_LABEL)
-        cmp["기준 ROAS"] = cmp["be_roas"]
-        cmp["광고비 비중"] = cmp["cost"] / cmp["cost"].sum()
-        cmp["판정"] = ["✅ 양호" if r >= b else "⚠️ 기준 미달" for r, b in zip(cmp["roas"], cmp["be_roas"])]
-        st.caption(f"{ad_ctx_label} · {w}일 전환 기준. 기준 ROAS: 로켓=마진 기반 손익분기, 윙=목표 ROAS "
-                   f"({ui.mult(cfg.get('wing_target_roas'))}, 설정에서 변경)")
-        st.dataframe(cmp[["구분", "cost", "광고비 비중", "orders", "rev", "roas", "기준 ROAS", "판정"]]
-                     .rename(columns={"cost": "광고비", "orders": "주문", "rev": "전환매출", "roas": "ROAS"}),
-                     hide_index=True, width="stretch", column_config={
-                         "광고비": st.column_config.NumberColumn(format="₩%d"), "전환매출": st.column_config.NumberColumn(format="₩%d"),
-                         "ROAS": st.column_config.NumberColumn(format="percent"), "기준 ROAS": st.column_config.NumberColumn(format="percent"),
-                         "광고비 비중": st.column_config.NumberColumn(format="percent")})
-        fig = go.Figure()
-        fig.add_bar(x=cmp["구분"], y=cmp["cost"], name="광고비", marker_color="#E45756",
-                    hovertemplate="%{x}<br>광고비 ₩%{y:,.0f}<extra></extra>")
-        fig.add_bar(x=cmp["구분"], y=cmp["rev"], name="전환매출", marker_color="#4C78A8",
-                    hovertemplate="%{x}<br>전환매출 ₩%{y:,.0f}<extra></extra>")
-        fig.update_layout(barmode="group", yaxis_title="₩")
-        ui.show(fig, 260)
-        st.caption("윙은 판매자배송 상품이라 로켓 재고·판매와 연결되지 않으며, 위 로켓 KPI·통합 손익에는 윙 광고비가 포함되지 않습니다. "
-                   "자세한 내용은 메뉴의 '로켓 광고 성과' / '윙 광고 성과'에서 보세요.")
-    else:
-        st.info("비교할 광고비 데이터가 없습니다.")
-else:
-    st.info("광고 데이터가 없어 비교할 수 없습니다.")
-
 # ---- 추이 차트
 if view == "주":
     st.subheader("📈 최근 12주 주간 판매·광고비 추이")
@@ -229,10 +201,10 @@ elif view == "월":
     st.subheader("📈 최근 12개월 월별 판매·광고비 추이")
     m_starts = [(asof.replace(day=1) - pd.DateOffset(months=i)).normalize() for i in range(11, -1, -1)]
     qs, labels, ads = [], [], []
-    # 월별 Retail 광고비: 일자 파일 + 한 달 안에 들어가는 기간 파일 (더 큰 기간에 포함되는 것은 이중 집계 방지로 제외)
+    # 월별 Retail 광고비: 일 단위 파일 + 한 달 안에 들어가는 주 단위 파일
     ad_r = ad[ad["sale_type"] == "Retail"] if len(ad) else ad
     cost_by_span = ad_r.groupby(["period_start", "period_end"])["cost"].sum().to_dict() if len(ad_r) else {}
-    kept_spans = ui._drop_nested(list(cost_by_span))[0]
+    kept_spans = list(cost_by_span)          # 일·주 규칙상 겹치는 기간은 저장되지 않음
     ad_month: dict = {}
     for ps, pe in kept_spans:
         if ps[:7] == pe[:7]:
@@ -277,7 +249,7 @@ else:
         fig.add_scatter(x=idx, y=s.values, name="광고비(일자)", yaxis="y2", mode="lines+markers",
                         line=dict(color="#E45756"), hovertemplate="%{x|%m/%d}<br>광고비 ₩%{y:,.0f}<extra></extra>")
     _spans = [(r.period_start, r.period_end) for r in ad[ad["is_daily"] == 0][["period_start", "period_end"]].drop_duplicates().itertuples()] if len(ad) else []
-    for r in [type("P", (), {"period_start": x, "period_end": y}) for x, y in ui._drop_nested(_spans)[0]]:
+    for r in [type("P", (), {"period_start": x, "period_end": y}) for x, y in _spans if classify_ad_period(x, y) == "주"]:
         if pd.Timestamp(r.period_end) >= idx[0] and pd.Timestamp(r.period_start) <= idx[-1]:
             c = ad[(ad.period_start == r.period_start) & (ad.period_end == r.period_end) & (ad.sale_type == "Retail")]["cost"].sum()
             fig.add_vrect(x0=pd.Timestamp(r.period_start) - timedelta(hours=12), x1=pd.Timestamp(r.period_end) + timedelta(hours=12),
@@ -292,4 +264,4 @@ else:
                             text=[f"체험단 {v}개" for v in tt.values], hovertemplate="%{x|%m/%d} %{text}<extra></extra>")
     fig.update_layout(yaxis=dict(title="판매량(개)"), yaxis2=dict(title="광고비(₩)", overlaying="y", side="right", showgrid=False))
     ui.show(fig, 400)
-    st.caption("광고비 선은 '일자 데이터'만 표시합니다. 주간·월간 기간 파일은 붉은 음영 구간에 기간 합계로 표시됩니다.")
+    st.caption("광고비 선은 '일 단위 데이터'만 표시합니다. 주 단위 파일은 붉은 음영 구간에 그 주 합계로 표시됩니다.")
