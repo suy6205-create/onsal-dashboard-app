@@ -187,9 +187,13 @@ with t_ad:
             st.rerun()
         st.markdown("---")
         st.markdown("**광고 데이터 전체 삭제** — 새 규칙(일/주 단위)으로 처음부터 다시 올릴 때 사용합니다. 판매·체험단·마스터는 지워지지 않습니다.")
-        st.download_button("⬇️ 삭제 전 백업(엑셀) 받기", to_excel_bytes({"광고": db.read_ad()}),
-                           file_name=f"광고데이터_백업_{date.today()}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # 백업 파일은 버튼을 눌렀을 때만 만든다 (화면을 다시 그릴 때마다 만들면 광고 데이터가 클수록 매번 오래 걸린다)
+        if st.button("📦 삭제 전 백업 파일 만들기 (CSV, 엑셀에서 열림)", key="ad_backup_make"):
+            with st.spinner("백업 파일을 만드는 중…"):
+                st.session_state["ad_backup_csv"] = db.read_ad().to_csv(index=False).encode("utf-8-sig")
+        if st.session_state.get("ad_backup_csv"):
+            st.download_button("⬇️ 백업 파일 내려받기", st.session_state["ad_backup_csv"],
+                               file_name=f"광고데이터_백업_{date.today()}.csv", mime="text/csv", key="ad_backup_dl")
         ok = st.checkbox("백업을 받았고, 광고 데이터를 모두 지우는 것을 확인했습니다", key="ad_wipe_ok")
         if st.button("⚠️ 광고 데이터 전체 삭제", type="primary", disabled=not ok):
             db.delete_all_ad()
