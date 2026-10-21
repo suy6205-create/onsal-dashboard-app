@@ -82,3 +82,14 @@ def test_multi_brand_filter_and_brand_column():
     assert dict(zip(p.daily["sku_id"], p.daily["brand"])) == {"1": "온살", "2": "루메아카이브"}
     assert len(L.normalize_sales_df(df, "온살").daily) == 1                      # 문자열 하나도 그대로 동작
     assert L.as_brand_list("온살, 루메아카이브 ,") == ["온살", "루메아카이브"]
+
+
+def test_draft_ad_map_links_new_sku_by_product_name():
+    master = pd.DataFrame({"SKU ID": ["111", "222"], "품목": ["루메아카이브 스쿠알란 올인원 로션 150ml 1개", "루메아카이브 스쿠알란 올인원 로션 150ml 2개"],
+                           "브랜드": ["루메아카이브"] * 2, "광고명키워드": ["", ""]})
+    ad = pd.DataFrame({"ad_option_id": ["9", "8"], "ad_product": ["루메아카이브 스쿠알란 올인원 로션,3개,3개,150ml,150ml", "루메아카이브 다른 제품,1개"],
+                       "conv_option_id": ["9", "8"], "conv_product": ["루메아카이브 스쿠알란 올인원 로션,3개,3개,150ml,150ml", "루메아카이브 다른 제품,1개"]})
+    m = L.draft_ad_map(ad, master, ["온살", "루메아카이브"]).set_index("광고옵션ID")
+    assert m.loc["9", "SKU ID"] == "111" and m.loc["9", "묶음수량"] == 3          # 1개짜리 SKU 우선, 묶음수량은 상품명에서
+    assert m.loc["9", "비고"].startswith("자동추정")
+    assert m.loc["8", "SKU ID"] == "" and m.loc["8", "비고"] == "SKU 미확정"       # 못 찾으면 사용자가 확정

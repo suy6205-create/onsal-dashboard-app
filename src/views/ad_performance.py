@@ -2,6 +2,7 @@
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from src import config, db
 from src import metrics as M
 from src import ui
 
@@ -230,11 +231,73 @@ def _weekly_trend(cfg: dict, d: dict) -> None:
     ui.show(fig, 380)
 
 
+# ------------------------------------------------------------------ 브랜드별 비교
+def _brand_compare(cfg: dict) -> None:
+    """온살 / 루메아카이브 등 브랜드별 광고 성과를 나란히 본다. 사이드바의 브랜드 선택과 무관하게 모든 브랜드를 비교한다."""
+    brands = config.brand_list(cfg)
+    ad = db.read_ad()
+    if ad.empty:
+        st.info("저장된 광고 데이터가 없습니다.")
+        return
+    mast, amap = config.load_master(), config.load_map()
+    main_w = 14 if int(cfg["attribution_days"]) == 14 else 1
+    p = M.prep_ad(ad, main_w, amap, mast, cfg["default_breakeven_roas"], ui.supply_by_sku(db.read_sales_daily()))
+    wf = M.ad_weekly_frame(M.tag_ad_periods(p))               # 일·주 규칙으로 한 번씩만 센 행
+    if wf.empty:
+        st.info("주 단위(월~일) 또는 일 단위 광고 파일이 아직 없습니다.")
+        return
+    wf = M.tag_ad_brand(wf, amap, mast, brands)
+    weeks = sorted(wf["week"].unique())
+    pick = st.selectbox("기간", ["저장된 전체 기간"] + [M.week_label(x) for x in reversed(weeks)], key="brand_cmp_week",
+                        help="주(월~일) 단위로 고르거나 저장된 전체 기간 합계를 봅니다.")
+    sub = wf if pick.startswith("저장된") else wf[wf["week"] == next(x for x in weeks if M.week_label(x) == pick)]
+    g = M.ad_summary(sub, ["brand"]).sort_values("cost", ascending=False)
+    if g.empty or g["cost"].sum() <= 0:
+        st.info("이 기간에는 광고비가 없습니다.")
+        return
+    g["광고비 비중"] = g["cost"] / g["cost"].sum()
+    g["기준 ROAS"] = g["be_roas"]
+    g["판정"] = ["-" if c <= 0 else ("✅ 양호" if r >= b else "⚠️ 기준 미달") for c, r, b in zip(g["cost"], g["roas"], g["be_roas"])]
+    best = g[g["cost"] > 0].sort_values("roas", ascending=False).iloc[0]
+    ui.headline([f"{pick}: 광고비 ₩{g['cost'].sum():,.0f} 중 '{g.iloc[0]['brand']}'가 {g.iloc[0]['광고비 비중'] * 100:.0f}%를 씁니다. "
+                 f"ROAS는 '{best['brand']}'가 가장 높습니다({ui.mult(best['roas'])})."])
+    st.dataframe(g[["brand", "cost", "광고비 비중", "clicks", "orders", "rev", "cvr", "cpc", "roas", "기준 ROAS", "판정"]].rename(
+        columns={"brand": "브랜드", "cost": "광고비", "clicks": "클릭", "orders": f"주문({main_w}일)", "rev": f"전환매출({main_w}일)",
+                 "cvr": "CVR", "cpc": "CPC", "roas": "ROAS"}),
+        hide_index=True, width="stretch", column_config={
+            "광고비": st.column_config.NumberColumn(format="₩%d"), f"전환매출({main_w}일)": st.column_config.NumberColumn(format="₩%d"),
+            "CPC": st.column_config.NumberColumn(format="₩%d"), "CVR": st.column_config.NumberColumn(format="percent"),
+            "ROAS": st.column_config.NumberColumn(format="percent"), "기준 ROAS": st.column_config.NumberColumn(format="percent"),
+            "광고비 비중": st.column_config.NumberColumn(format="percent")})
+    if (g["brand"] == "기타(미분류)").any():
+        st.warning("브랜드를 알 수 없는 광고 행이 있습니다. 상품 마스터의 '브랜드' 칸과 광고 매핑표의 SKU를 확인하세요.")
+    st.caption("브랜드는 ① 광고 매핑표의 SKU → 상품 마스터의 브랜드, ② 없으면 광고 상품명에 들어 있는 브랜드명으로 구분합니다. "
+               "기준 ROAS는 마진 기반 손익분기이며, 상품 마스터에 가격·원가가 없는 상품은 임시 기준값을 씁니다. "
+               "손익분기 판정을 정확히 하려면 해당 브랜드 상품의 판매가·원가를 마스터에 입력하세요.")
+    wk = M.ad_summary(wf, ["week", "brand"]).sort_values("week")
+    wk["기간"] = [M.week_label(x) for x in wk["week"]]
+    fig = go.Figure()
+    for b, gg in wk.groupby("brand"):
+        fig.add_bar(x=gg["기간"], y=gg["cost"], name=f"{b} 광고비",
+                    hovertemplate=f"{b}<br>%{{x}}<br>광고비 ₩%{{y:,.0f}}<extra></extra>")
+    for b, gg in wk.groupby("brand"):
+        fig.add_scatter(x=gg["기간"], y=gg["roas"] * 100, name=f"{b} ROAS", yaxis="y2", mode="lines+markers", line=dict(dash="dot"),
+                        hovertemplate=f"{b}<br>%{{x}}<br>ROAS %{{y:.0f}}%<extra></extra>")
+    fig.update_layout(barmode="stack", title="주별 브랜드 광고비(막대)와 ROAS(점선)", yaxis=dict(title="광고비(₩)"),
+                      yaxis2=dict(title="ROAS(%)", overlaying="y", side="right", showgrid=False))
+    ui.show(fig, 380)
+
+
 def render() -> None:
     cfg = ui.setup("광고 성과", "📢")
     d = ui.load_all(cfg)
-    t_detail, t_period = st.tabs(["📊 상세 분석", "🗓️ 주별 추이"])
-    with t_detail:
+    multi = len(config.brand_list(cfg)) > 1
+    names = ["📊 상세 분석", "🗓️ 주별 추이"] + (["🏷️ 브랜드별 비교"] if multi else [])
+    tabs = st.tabs(names)
+    with tabs[0]:
         _detail(cfg, d)
-    with t_period:
+    with tabs[1]:
         _weekly_trend(cfg, d)
+    if multi:
+        with tabs[2]:
+            _brand_compare(cfg)

@@ -243,6 +243,28 @@ def guess_bundle(name: str) -> int:
     return 1
 
 
+def _norm_name(s) -> str:
+    return re.sub(r"\s+", "", str(s))
+
+
+def match_sku_by_name(ad_name: str, master: pd.DataFrame) -> str:
+    """광고 상품명('루메아카이브 스쿠알란 올인원 로션,2개,...')의 기본 이름이 마스터 품목명에 들어 있으면 그 SKU.
+    판매 데이터에서 자동으로 추가된 SKU 는 '광고명키워드'가 비어 있어서 이 규칙으로 연결한다.
+    후보가 여럿이면 '1개'짜리(묶음 옵션의 기준 SKU) 를 우선한다. 못 찾으면 ''."""
+    base = _norm_name(str(ad_name).split(",")[0])
+    if len(base) < 4 or master is None or master.empty:
+        return ""
+    hits = []
+    for _, m in master.iterrows():
+        item = _norm_name(m.get("품목", ""))
+        if len(item) >= 4 and (base in item or item in base):
+            hits.append((str(m["SKU ID"]), item))
+    if not hits:
+        return ""
+    one = [sku for sku, item in hits if "1개" in item]
+    return one[0] if one else hits[0][0]
+
+
 def draft_ad_map(ad: pd.DataFrame, master: pd.DataFrame, brand,
                  existing: pd.DataFrame | None = None) -> pd.DataFrame:
     """브랜드명이 들어간 옵션 중 매핑에 없는 것을 이름 규칙으로 추정해 초안 생성."""
@@ -255,15 +277,18 @@ def draft_ad_map(ad: pd.DataFrame, master: pd.DataFrame, brand,
         for oid, name in zip(sub[opt_col], sub[name_col]):
             if not oid or oid in known or oid in rows or not any(b in str(name) for b in brands):
                 continue
-            sku = ""
+            sku, how = "", ""
             for _, m in master.iterrows():
                 kw = str(m.get("광고명키워드", "") or "").strip()
                 if kw and kw in str(name):
-                    sku = str(m["SKU ID"])
+                    sku, how = str(m["SKU ID"]), "자동추정(확인 필요)"
                     break
+            if not sku:                                   # 키워드가 없으면 상품명 일치로 연결
+                sku = match_sku_by_name(name, master)
+                how = "자동추정(이름 일치, 확인 필요)" if sku else ""
             rows[oid] = {"광고옵션ID": oid, "광고상품명": name, "SKU ID": sku,
                          "묶음수량": guess_bundle(name),
-                         "비고": "자동추정(확인 필요)" if sku else "SKU 미확정"}
+                         "비고": how if sku else "SKU 미확정"}
     return pd.DataFrame(list(rows.values()), columns=MAP_COLS)
 
 

@@ -417,6 +417,17 @@ def ad_row_brand(ad: pd.DataFrame, ad_map: pd.DataFrame, master: pd.DataFrame, b
     return from_map.where(from_map.notna() & (from_map != ""), ad["ad_product"].map(by_name)).fillna("")
 
 
+def tag_ad_brand(p: pd.DataFrame, ad_map: pd.DataFrame, master: pd.DataFrame, brands: list[str],
+                 other: str = "기타(미분류)") -> pd.DataFrame:
+    """광고 행에 'brand' 컬럼을 붙인다 (모르면 other)."""
+    q = p.copy()
+    if q.empty:
+        q["brand"] = pd.Series(dtype=str)
+        return q
+    q["brand"] = ad_row_brand(q, ad_map, master, brands).replace("", other).to_numpy()
+    return q
+
+
 # ---------------------------------------------------------------- 광고: 일 / 주 단위 묶기
 def week_monday(date_str: str) -> str:
     d = pd.Timestamp(date_str)

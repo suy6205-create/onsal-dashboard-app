@@ -172,3 +172,12 @@ def test_supply_margin_edge_cases_and_inverse():
     assert loss["개당 마진"] < 0 and loss["손익분기 ROAS"] is None
     assert M.supply_margin(10000, 3500, 0.4, discount=1000)["소비자가"] == 9000
     assert M.fee_rate_from_supply(10000, 6000) == pytest.approx(0.4) and M.fee_rate_from_supply(0, 6000) is None
+
+
+def test_tag_ad_brand_uses_mapping_then_product_name():
+    ad = pd.DataFrame({"ad_option_id": ["1", "2", "3"],
+                       "ad_product": ["온살 세럼,1개", "루메아카이브 로션,1개", "아무 이름"], "cost": [1.0, 2.0, 3.0]})
+    amap = pd.DataFrame({"광고옵션ID": ["1"], "SKU ID": ["9"], "묶음수량": [1], "광고상품명": [""], "비고": [""]})
+    master = pd.DataFrame({"SKU ID": ["9"], "브랜드": ["루메아카이브"]})        # 매핑된 SKU 의 마스터 브랜드가 이름보다 우선
+    q = M.tag_ad_brand(ad, amap, master, ["온살", "루메아카이브"])
+    assert list(q["brand"]) == ["루메아카이브", "루메아카이브", "기타(미분류)"]
