@@ -145,10 +145,32 @@ def setup(title: str, icon: str = "📊") -> dict:
             st.rerun()
         st.stop()
     st.title(f"{icon} {title}")
+    _timing_caption(reset=True)
     return cfg
 
 
+_TIMING_PH = None
+
+
+def _timing_caption(reset: bool = False) -> None:
+    """속도 진단: 이 앱 프로세스가 DB 를 준비하는 데 걸린 시간과 캐시 밖에서 읽은 조회 시간 (사이드바 맨 아래)."""
+    global _TIMING_PH
+    if _TIMING_PH is None or reset:
+        _TIMING_PH = st.sidebar.empty()
+    e, m = db.STATS["engine_s"], db.STATS["misses"]
+    bits = [f"DB 준비 {e:.1f}초" if e is not None else "DB 준비 (캐시됨)"]
+    if m:
+        bits.append(f"최근 DB 조회 {len(m)}건 {sum(x[0] for x in m):.1f}초 (최대 {max(x[0] for x in m):.1f}초 · {max(x[1] for x in m):,}행)")
+    _TIMING_PH.caption("⏱ " + " · ".join(bits))
+
+
 def load_all(cfg: dict) -> dict:
+    d = _load_all(cfg)
+    _timing_caption()
+    return d
+
+
+def _load_all(cfg: dict) -> dict:
     """데이터를 읽고, 사이드바에서 고른 브랜드(전체/브랜드별)로 판매·마스터·체험단·광고를 걸러서 돌려준다."""
     d = {
         "master": config.load_master(), "map": config.load_map(),

@@ -69,6 +69,7 @@ def retrying(fn, tries: int = 4, base_delay: float = 1.5, sleep=time.sleep):
 def engine():
     global _engine
     if _engine is None:
+        t0 = time.time()
         url = get_url()
         kwargs = {"connect_args": {"connect_timeout": 15}} if not url.startswith("sqlite") else {}
         eng = create_engine(url, pool_pre_ping=True, pool_recycle=300, future=True, **kwargs)
@@ -77,6 +78,7 @@ def engine():
             def _connect_with_retry(dialect, conn_rec, cargs, cparams):   # noqa: ANN001
                 return retrying(lambda: dialect.loaded_dbapi.connect(*cargs, **cparams))
         _create_schema(eng)      # 연결 단계에서 이미 재시도하므로 여기서는 한 번만
+        STATS["engine_s"] = time.time() - t0
         _engine = eng          # 스키마 준비까지 성공했을 때만 보관 (실패하면 다음 접속에서 다시 시도)
     return _engine
 
@@ -154,13 +156,18 @@ _CACHE: dict = {}
 CACHE_TTL = 1800
 
 
+STATS = {"engine_s": None, "misses": []}   # 속도 진단용: 엔진 준비 시간, 캐시에 없어 DB 에서 읽은 조회의 (초, 행수)
+
+
 def _read(sql: str, params: dict | None = None) -> pd.DataFrame:
     key = (get_url(), sql, tuple(sorted((params or {}).items())))
     hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < CACHE_TTL:
         return hit[1].copy()
+    t0 = time.time()
     with engine().connect() as c:
         df = pd.read_sql(text(sql), c, params=params)
+    STATS["misses"] = (STATS["misses"] + [(time.time() - t0, len(df))])[-30:]
     _CACHE[key] = (time.time(), df)
     return df.copy()
 
