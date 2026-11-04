@@ -53,7 +53,7 @@ def is_remote() -> bool:
     return not get_url().startswith("sqlite")
 
 
-def retrying(fn, tries: int = 4, base_delay: float = 1.5, sleep=time.sleep):
+def retrying(fn, tries: int = 3, base_delay: float = 1.5, sleep=time.sleep):
     """일시적 연결 실패(무료 DB 가 잠들었다 깨어나는 순간 등)에 대비해 몇 번 다시 시도한다."""
     last = None
     for i in range(tries):
@@ -71,7 +71,7 @@ def engine():
     if _engine is None:
         t0 = time.time()
         url = get_url()
-        kwargs = {"connect_args": {"connect_timeout": 15}} if not url.startswith("sqlite") else {}
+        kwargs = {"connect_args": {"connect_timeout": 8}} if not url.startswith("sqlite") else {}
         eng = create_engine(url, pool_pre_ping=True, pool_recycle=300, future=True, **kwargs)
         if not url.startswith("sqlite"):
             @event.listens_for(eng, "do_connect")
