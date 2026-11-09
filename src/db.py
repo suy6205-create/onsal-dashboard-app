@@ -72,7 +72,7 @@ def engine():
         t0 = time.time()
         url = get_url()
         kwargs = {"connect_args": {"connect_timeout": 8}} if not url.startswith("sqlite") else {}
-        eng = create_engine(url, pool_pre_ping=True, pool_recycle=300, future=True, **kwargs)
+        eng = create_engine(url, pool_pre_ping=True, future=True, **kwargs)
         if not url.startswith("sqlite"):
             @event.listens_for(eng, "do_connect")
             def _connect_with_retry(dialect, conn_rec, cargs, cparams):   # noqa: ANN001
@@ -118,7 +118,25 @@ def _ddl(dialect: str) -> list[str]:
     ]
 
 
+def _schema_ready(eng) -> bool:
+    """테이블·brand 컬럼이 이미 다 있으면 True (왕복 1번). 온라인 DB 는 한 번 오가는 데 0.5~1초라 매 접속마다 DDL 을 돌리지 않는다."""
+    if eng.dialect.name == "sqlite":
+        return False
+    try:
+        with eng.connect() as c:
+            rows = c.execute(text("SELECT table_name, column_name FROM information_schema.columns "
+                                  "WHERE table_schema = current_schema()")).all()
+    except Exception:  # noqa: BLE001
+        return False
+    have = {(t, col) for t, col in rows}
+    tables = {t for t, _ in have}
+    need = {"sales_center", "sales_daily", "ad_rows", "trials", "uploads", "app_config"}
+    return need <= tables and ("sales_center", "brand") in have and ("sales_daily", "brand") in have
+
+
 def _create_schema(eng) -> None:
+    if _schema_ready(eng):
+        return
     with eng.begin() as c:
         for stmt in _ddl(eng.dialect.name):
             c.execute(text(stmt))
@@ -186,8 +204,9 @@ def _log(c, filename, kind, start, end, rows):
 
 # ---------------------------------------------------------------- 설정/마스터 (key-value)
 def kv_get(name: str) -> str | None:
-    df = _read("SELECT content FROM app_config WHERE name = :n", {"n": name})
-    return None if df.empty else df.iloc[0]["content"]
+    df = _read("SELECT name, content FROM app_config")   # 설정류를 한 번에 읽어 둔다 (조회마다 DB 를 오가지 않게)
+    hit = df[df["name"] == name]
+    return None if hit.empty else hit.iloc[0]["content"]
 
 
 def kv_set(name: str, content: str) -> None:
