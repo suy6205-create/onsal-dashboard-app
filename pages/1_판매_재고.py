@@ -85,7 +85,10 @@ with t_status:
 # ------------------------------------------------------------ 히트맵
 with t_heat:
     months = sorted({x[:7] for x in dates}, reverse=True)
-    mon = st.selectbox("월 선택", months)
+    c1, c2 = st.columns([1, 2])
+    mon = c1.selectbox("월 선택", months)
+    show = c2.radio("칸에 표시", ["출고 + 재고", "출고만", "재고만"], horizontal=True, key="heat_show",
+                    help="색은 항상 출고량 기준입니다. 재고는 그날 마감 시점의 센터 합계 재고입니다.")
     sub = daily[daily["date"].str.startswith(mon)]
     names = dict(zip(master["SKU ID"], master["품목"]))
     sub = sub.assign(품목=sub["sku_id"].map(names).fillna(sub["sku_name"]))
@@ -93,13 +96,25 @@ with t_heat:
     pv = sub.pivot_table(index="품목", columns="date", values="outbound", aggfunc="sum")
     pv = pv.reindex(columns=days.strftime("%Y-%m-%d"))
     z = pv.values
+    sv = sub.pivot_table(index="품목", columns="date", values="stock", aggfunc="sum").reindex(
+        index=pv.index, columns=pv.columns).values
+
+    def cell(o, k):
+        if show == "출고만":
+            return "" if pd.isna(o) else f"{o:.0f}"
+        if show == "재고만":
+            return "" if pd.isna(k) else f"{k:,.0f}"
+        out = "" if pd.isna(o) else f"<b>{o:.0f}</b>"
+        stk = "" if pd.isna(k) else f"<span style='font-size:11px'>재고 {k:,.0f}</span>"
+        return f"{out}<br>{stk}" if stk else out
     # 0 은 옅은 회색, 1 이상은 눈에 띄는 파랑으로 (적게 팔린 날도 구분되게)
     scale = [[0.0, "#EDF0F4"], [0.0001, "#BBD7F1"], [0.35, "#5FA2D6"], [0.7, "#2166AC"], [1.0, "#08306B"]]
     fig = go.Figure(go.Heatmap(
         z=z, x=[x[8:] for x in pv.columns], y=list(pv.index), colorscale=scale, zmin=0, xgap=3, ygap=3,
-        text=[[("" if pd.isna(v) else f"{v:.0f}") for v in row] for row in z], texttemplate="%{text}",
-        textfont=dict(size=17, family="Arial Black, Arial, sans-serif"),
-        hovertemplate="%{y}<br>" + mon + "-%{x}<br>출고 %{z:,}개<extra></extra>", colorbar=dict(title="출고")))
+        text=[[cell(o, k) for o, k in zip(zr, sr)] for zr, sr in zip(z, sv)], texttemplate="%{text}",
+        customdata=sv, textfont=dict(size=15 if show == "출고 + 재고" else 17, family="Arial Black, Arial, sans-serif"),
+        hovertemplate="%{y}<br>" + mon + "-%{x}<br>출고 %{z:,}개 · 재고 %{customdata:,}개<extra></extra>",
+        colorbar=dict(title="출고")))
     if len(trials):
         for tr in trials[trials["date"].str.startswith(mon)].itertuples():
             if names.get(tr.sku_id) in list(pv.index):
@@ -113,7 +128,7 @@ with t_heat:
                      tickfont=dict(size=14), title=dict(text="일", standoff=6), showgrid=False)
     fig.update_yaxes(autorange="reversed", tickfont=dict(size=14), showgrid=False)
     ui.show(fig, max(280, 84 * len(pv) + 170))
-    st.caption("주황 테두리 = 체험단 진행일. 빈 칸 = 해당일 데이터 없음(판매 0으로 계산).")
+    st.caption("색 = 출고량, 칸 안의 작은 글씨 = 그날 재고. 주황 테두리 = 체험단 진행일. 빈 칸 = 해당일 데이터 없음(판매 0으로 계산).")
 
 # ------------------------------------------------------------ 월별 매출
 with t_month:
